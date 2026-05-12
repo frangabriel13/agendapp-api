@@ -1,98 +1,307 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Agend App — API
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Backend del SaaS multi-tenant de gestión de turnos para dueños de negocios (peluquerías, estéticas, etc).
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+> El frontend vive en una carpeta aparte (`../agendapp-front`). Esta es solo la API.
 
-## Description
+---
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Stack
 
-## Project setup
+| Capa | Tecnología |
+|---|---|
+| Framework | NestJS 11 (TypeScript, modo `strict`) |
+| Base de datos | PostgreSQL 16 (en Docker) |
+| ORM | Prisma 7 con driver adapter (`@prisma/adapter-pg` + `pg`) |
+| Validación de envs | `@nestjs/config` + Zod |
+| Health checks | `@nestjs/terminus` |
+| GUI de DB | Adminer (en Docker) |
 
-```bash
-$ npm install
-```
+---
 
-## Compile and run the project
+## Pre-requisitos
 
-```bash
-# development
-$ npm run start
+Asegurate de tener instalado:
 
-# watch mode
-$ npm run start:dev
+- **Node.js ≥ 20** — recomendado 24.x. Verificá con `node --version`.
+- **npm ≥ 10** — viene con Node.
+- **Docker** + **Docker Compose** — necesario para levantar Postgres localmente. Si usás WSL, Docker Desktop con WSL integration alcanza.
+- **Git** — para clonar.
 
-# production mode
-$ npm run start:prod
-```
+No necesitás instalar Postgres en tu máquina: corre dentro de Docker.
 
-## Run tests
+---
+
+## Setup (primera vez)
+
+### 1. Clonar y entrar al proyecto
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+git clone <repo-url> agend-app
+cd agend-app/agendapp-api
 ```
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+### 2. Instalar dependencias
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+npm install
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+### 3. Configurar variables de entorno
 
-## Resources
+Copiá el archivo de ejemplo y dejalo como `.env`:
 
-Check out a few resources that may come in handy when working with NestJS:
+```bash
+cp .env.example .env
+```
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+Los valores por default ya están listos para correr contra el Postgres del Docker Compose. **No necesitás tocar nada** para arrancar en local. Si alguna vez apuntás a otra DB, cambiás `DATABASE_URL`.
 
-## Support
+> ⚠️ El archivo `.env` está en `.gitignore` y **no se comitea nunca**. Si agregás una variable nueva, sumala a `.env.example` para que el resto del equipo la vea.
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+### 4. Levantar Postgres + Adminer con Docker
 
-## Stay in touch
+```bash
+docker compose up -d
+```
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+Esto levanta:
+- **Postgres 16** en `localhost:5432` (usuario `agendapp`, password `agendapp_dev_password`, DB `agendapp`).
+- **Adminer** (GUI web de DB) en `http://localhost:8080`.
 
-## License
+Verificá que ambos estén `Up` (y Postgres `healthy`):
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+```bash
+docker compose ps
+```
+
+### 5. Aplicar las migraciones de Prisma
+
+```bash
+npx prisma migrate dev
+```
+
+Esto:
+1. Crea las tablas en la DB según `prisma/schema.prisma`.
+2. Genera el cliente de Prisma tipado en `node_modules/@prisma/client`.
+
+> Si es la primera vez que corre, te va a pedir confirmar el nombre de la migración a aplicar. Solo presioná Enter.
+
+### 6. Levantar el servidor en modo dev
+
+```bash
+npm run start:dev
+```
+
+El server escucha en **`http://localhost:3001`** con hot reload.
+
+### 7. Verificar que todo anda
+
+En otra terminal:
+
+```bash
+curl http://localhost:3001/health
+```
+
+Tenés que ver:
+
+```json
+{"status":"ok","info":{"database":{"status":"up"}},...}
+```
+
+Si te devuelve 200 con `database: up`, el setup está completo ✅
+
+---
+
+## Estructura del proyecto
+
+```
+agendapp-api/
+├── docker-compose.yml          # Postgres + Adminer
+├── prisma/
+│   ├── schema.prisma           # modelos de la DB (Tenant, ...)
+│   └── migrations/             # SQL versionado
+├── prisma.config.ts            # config de Prisma 7 (DATABASE_URL vive acá)
+├── src/
+│   ├── main.ts                 # entry point
+│   ├── app.module.ts           # root module — registra los demás
+│   ├── config/                 # Zod schema + validación de envs
+│   ├── common/                 # decorators / guards / filters compartidos
+│   ├── prisma/                 # PrismaService + PrismaModule (global)
+│   └── modules/                # ⭐ feature modules (dominio)
+│       └── health/             # GET /health
+├── test/                       # tests e2e
+└── .env                        # variables locales (no comiteado)
+```
+
+**Convención clave:** todo módulo de dominio nuevo (`users`, `appointments`, etc.) vive bajo `src/modules/`. Cada uno se autocontiene en su carpeta con `*.module.ts`, `*.controller.ts`, `*.service.ts`, y subcarpetas `dto/`, `entities/` cuando aplique.
+
+---
+
+## Cheat sheet de comandos
+
+### NestJS / npm
+
+```bash
+npm run start:dev          # dev server con hot reload (lo que vas a usar 99% del tiempo)
+npm run start              # arranca una vez, sin watch
+npm run start:prod         # corre el bundle de producción (después de build)
+npm run build              # transpila TS → JS en dist/
+npm run lint               # ESLint con autofix
+npm run format             # Prettier sobre src/ y test/
+npm run test               # tests unitarios (Jest)
+npm run test:watch         # Jest en watch mode
+npm run test:cov           # tests con coverage
+npm run test:e2e           # tests e2e
+```
+
+### Docker (Postgres + Adminer)
+
+```bash
+docker compose up -d                # levantar en background
+docker compose ps                   # ver estado de los containers
+docker compose logs -f postgres     # seguir logs de Postgres en vivo
+docker compose stop                 # apagar (preserva los datos)
+docker compose start                # volver a prender
+docker compose restart postgres     # reiniciar solo Postgres
+docker compose down                 # apagar + borrar containers (datos preservados en volumen)
+docker compose down -v              # ⚠️ apagar + borrar TODO incluyendo datos (cuidado)
+```
+
+### Prisma
+
+```bash
+npx prisma migrate dev              # aplicar migraciones pendientes en dev
+npx prisma migrate dev --name <n>   # crear nueva migración después de cambiar el schema
+npx prisma migrate reset            # ⚠️ borrar DB y reaplicar todas las migraciones desde cero
+npx prisma generate                 # regenerar el cliente tipado (después de cambiar schema)
+npx prisma studio                   # GUI en localhost:5555 — entiende tu schema, mejor que Adminer
+npx prisma db push                  # sincronizar schema sin crear migración (solo prototipos)
+npx prisma format                   # formatear schema.prisma
+```
+
+### Otros útiles
+
+```bash
+# Entrar a la DB con psql (cliente CLI nativo de Postgres dentro del container)
+docker exec -it agendapp-postgres psql -U agendapp -d agendapp
+
+# Ver tablas dentro de psql
+\dt
+
+# Salir de psql
+\q
+
+# Generar un módulo nuevo con el CLI de Nest
+npx nest g module modules/users
+npx nest g controller modules/users
+npx nest g service modules/users
+# o todo de una:
+npx nest g resource modules/users
+```
+
+---
+
+## URLs útiles en local
+
+| URL | Para qué |
+|---|---|
+| `http://localhost:3001` | API |
+| `http://localhost:3001/health` | Health check |
+| `http://localhost:8080` | Adminer (GUI Postgres) — login: `postgres` / `agendapp` / `agendapp_dev_password` / `agendapp` |
+| `http://localhost:5555` | Prisma Studio (cuando corrés `npx prisma studio`) |
+
+> Nota: en Adminer, el campo "Server" tiene que ser `postgres` (nombre del contenedor en la red Docker), **no** `localhost`.
+
+---
+
+## Cómo agregar un módulo de dominio nuevo
+
+Ejemplo: agregar el módulo `services` (servicios que ofrece cada negocio).
+
+1. **Modelar en Prisma:**
+   ```prisma
+   // prisma/schema.prisma
+   model Service {
+     id        String   @id @default(cuid())
+     tenantId  String
+     name      String
+     duration  Int      // minutos
+     price     Decimal  @db.Decimal(10, 2)
+     createdAt DateTime @default(now())
+     tenant    Tenant   @relation(fields: [tenantId], references: [id])
+   }
+   ```
+
+2. **Crear migración:**
+   ```bash
+   npx prisma migrate dev --name add_service
+   ```
+
+3. **Generar el módulo Nest:**
+   ```bash
+   npx nest g resource modules/services
+   ```
+   Te pregunta qué tipo (REST API), y si querés CRUD endpoints — decí que sí.
+
+4. **Inyectar `PrismaService`** en el `ServicesService` y usar `this.prisma.service.findMany(...)` etc. Como `PrismaModule` es global (`@Global()`), **no** tenés que importarlo en `ServicesModule`.
+
+---
+
+## Troubleshooting
+
+### "Port 3001 is already in use"
+Algo está usando el puerto. Matalo:
+```bash
+lsof -i :3001     # ver qué proceso lo ocupa
+kill <PID>
+```
+O cambiá `PORT=3002` en `.env`.
+
+### "Can't reach database server at localhost:5432"
+Postgres no está corriendo. Levantalo:
+```bash
+docker compose up -d
+docker compose ps    # verificar que esté healthy
+```
+
+### "Environment validation failed"
+Te falta una variable en `.env` o tiene formato inválido. El error te dice cuál. Compará tu `.env` con `.env.example`.
+
+### Después de un `git pull`, errores raros de tipos o de Prisma
+Probablemente cambió `package.json` o `schema.prisma`. Reinstalá y regenerá:
+```bash
+npm install
+npx prisma generate
+npx prisma migrate dev
+```
+
+### Querés borrar todo y empezar de cero
+```bash
+docker compose down -v          # borra datos de Postgres
+rm -rf node_modules dist
+npm install
+docker compose up -d
+npx prisma migrate dev
+npm run start:dev
+```
+
+---
+
+## Cosas que vienen (roadmap corto)
+
+- Modelado de dominio completo (`User`, `Appointment`, `Service`, `BusinessHours`)
+- Multi-tenancy con discriminator column + Prisma extension automática
+- Auth con JWT + argon2
+- Swagger / OpenAPI en `/api`
+- Logger estructurado (`nestjs-pino`)
+- BullMQ + Redis para jobs (recordatorios de turnos)
+
+---
+
+## Recursos
+
+- [NestJS Docs](https://docs.nestjs.com)
+- [Prisma Docs](https://www.prisma.io/docs)
+- [Zod Docs](https://zod.dev)
+- [Terminus (health checks)](https://docs.nestjs.com/recipes/terminus)
