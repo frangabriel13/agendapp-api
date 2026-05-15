@@ -22,7 +22,7 @@
 
 | Fase | Tema | Objetivo |
 |---|---|---|
-| 0 | Cimientos transversales | Decisiones base (IDs, soft delete, tenant scoping, logging, swagger) |
+| ✅ 0 | Cimientos transversales | Decisiones base (IDs, soft delete, tenant scoping, logging, swagger) |
 | 1 | Auth + Tenant base | Registro, login, JWT, planes, suscripción |
 | 2 | Estructura del negocio | Sucursales y empleados |
 | 3 | Catálogo | Servicios, categorías, recursos |
