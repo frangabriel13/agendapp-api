@@ -8,13 +8,20 @@
 
 ## 📌 Estado actual del repo
 
+> **Fase 0 cerrada.** Los cimientos transversales están completos; el próximo paso es la Fase 1.
+
 - ✅ NestJS 11 + TypeScript `strict` + Prisma 7 (driver adapter `@prisma/adapter-pg`).
 - ✅ `ConfigModule` con validación Zod (`src/config/env.schema.ts`).
-- ✅ `PrismaService` global (`src/prisma/prisma.service.ts`).
+- ✅ `PrismaService` global con dos clientes: `prisma.<modelo>` (base) y `prisma.scoped.<modelo>` (extendido).
 - ✅ Healthcheck `GET /health` con `PrismaHealthIndicator`.
 - ✅ Docker Compose con Postgres 16 + Adminer.
-- ⚠️ Schema con un solo modelo `Tenant` placeholder (usa `cuid()`, hay que migrar a UUID v4 — ver Fase 0).
-- ❌ Sin auth, sin tenant scoping, sin soft delete, sin RLS, sin dominios reales.
+- ✅ `TenantContextService` sobre `AsyncLocalStorage` (`run` / `runWithoutTenant`), global.
+- ✅ Extensions de Prisma: soft delete + tenant scope (`src/prisma/extensions/`), con modelos exentos explícitos.
+- ✅ Logger estructurado (nestjs-pino + `requestId`), filtro global de excepciones, Swagger en `/api`, `ValidationPipe` global y `ThrottlerModule` con guard global.
+- ✅ Migración `20260515120000_enable_extensions` (`pgcrypto` para `gen_random_uuid()`, `btree_gist` para la Fase 5).
+- ⚠️ Schema con **0 modelos** de negocio: los dominios reales empiezan en la Fase 1.
+- ⚠️ Hueco consciente: el middleware que llena el tenant-context desde el JWT se implementa en la Fase 1 (1.4/1.5). Hasta entonces, cualquier query sobre `prisma.scoped` fuera de `runWithoutTenant` lanza `TenantContextMissingError`.
+- ❌ Sin auth, sin RLS (Fase 8), sin dominios reales.
 
 ---
 
