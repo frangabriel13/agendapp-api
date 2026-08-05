@@ -55,16 +55,21 @@ Usuarios que se logean al sistema (owner + empleados).
 | `deleted_at` | TIMESTAMP | nullable (soft delete) |
 
 ### `refresh_tokens`
-Tokens de refresh para JWT.
+Tokens de refresh para JWT, con rotación y detección de reuso.
 
 | Campo | Tipo | Notas |
 |---|---|---|
-| `id` | UUID | PK |
+| `id` | UUID | PK — viaja dentro del token para poder ubicar la fila |
 | `user_id` | UUID | FK → users |
-| `token_hash` | VARCHAR | |
+| `family_id` | UUID | agrupa la cadena de rotaciones de un mismo login |
+| `token_hash` | VARCHAR | argon2 |
 | `expires_at` | TIMESTAMP | |
 | `revoked_at` | TIMESTAMP | nullable |
 | `created_at` | TIMESTAMP | |
+
+**Notas:**
+- El token que recibe el cliente es `<id>.<secret>`: el `id` ubica la fila y el `secret` se verifica con argon2 contra `token_hash` (un hash con salt no se puede buscar por igualdad).
+- En cada refresh se revoca el token viejo y se emite uno nuevo con el mismo `family_id`. Si llega un token ya revocado, se revoca **toda la familia** (señal de robo de token).
 
 ---
 
@@ -130,19 +135,32 @@ Catálogo global de planes (Básico, Pro, Avanzado, Business).
 | `id` | UUID | PK |
 | `name` | VARCHAR | |
 | `slug` | VARCHAR | UNIQUE |
-| `price_monthly_cents` | INT | |
+| `price_monthly_cents` | INT | nullable (`null` = a medida, plan Empresa) |
 | `price_yearly_cents` | INT | nullable |
-| `max_employees` | INT | incluye al owner |
-| `max_branches` | INT | |
-| `includes_clinic_records` | BOOLEAN | |
+| `max_employees` | INT | nullable (`null` = sin límite). **Incluye al owner** |
+| `max_branches` | INT | nullable (`null` = sin límite) |
+| `includes_clinic_records` | BOOLEAN | ficha clínica digital |
+| `includes_resources` | BOOLEAN | control de equipos/inventario (Fase 3) |
 | `support_level` | ENUM | standard, priority |
 | `is_active` | BOOLEAN | |
 | `display_order` | INT | |
 | `created_at` | TIMESTAMP | |
 | `updated_at` | TIMESTAMP | |
 
+**Planes vigentes** (precios finales en ARS, con IVA incluido; el anual equivale a 11 meses):
+
+| slug | name | mensual | anual | max_employees | max_branches | ficha clínica | equipos | soporte |
+|---|---|---|---|---|---|---|---|---|
+| `basico` | Básico | $25.000 | $275.000 | 1 | 1 | ✅ | ❌ | standard |
+| `pro` | Pro | $45.000 | $495.000 | 4 | 1 | ✅ | ✅ | priority |
+| `avanzado` | Avanzado | $80.000 | $880.000 | 7 | 2 | ✅ | ✅ | priority |
+| `empresa` | Empresa | a medida | a medida | `null` | `null` | ✅ | ✅ | priority |
+
 ### `subscriptions`
-Historial de suscripciones del tenant.
+Historial de suscripciones del tenant. **Es la fuente de verdad del estado**;
+`tenants.subscription_status` y `tenants.trial_ends_at` son copias
+desnormalizadas para lecturas rápidas y hay que actualizarlas en la misma
+transacción que cambia la suscripción.
 
 | Campo | Tipo | Notas |
 |---|---|---|
@@ -239,7 +257,10 @@ Profesionales y administrativos del negocio.
 | `deleted_at` | TIMESTAMP | nullable |
 
 **Constraints:**
-- `UNIQUE(tenant_id, user_id)` — un usuario solo puede ser empleado una vez por negocio.
+- `UNIQUE(user_id)` — hoy un usuario pertenece a **un solo negocio**, así que el unique es sobre `user_id` solo (subsume al `UNIQUE(tenant_id, user_id)` original). Si algún día soportamos usuarios multi-negocio, se reemplaza por el compuesto.
+- `UNIQUE(tenant_id) WHERE is_owner AND deleted_at IS NULL` — índice parcial: un solo owner activo por negocio.
+
+**Estado de implementación:** la Fase 1 creó la versión mínima (`tenant_id`, `user_id`, `role`, `is_owner`, `is_active` + timestamps), porque `/auth/register` necesita crear al owner. `hired_at`, `bio` y `avatar_url` se agregan en la Fase 2.
 
 ### `employee_branches`
 Sucursales donde trabaja cada empleado.
@@ -610,6 +631,13 @@ users ──< employees >── tenants ──< tenant_branding
 4. **CHECK constraint** `ends_at > starts_at` en `appointments`, `employee_time_off`, `branch_special_days`.
 
 5. **Soft delete bien aplicado** — los queries deben filtrar `deleted_at IS NULL` por default (Prisma tiene middleware para esto).
+
+6. **Índice parcial de owner único** en `employees` — ya implementado en la migración `auth_and_tenant_base`:
+   ```sql
+   CREATE UNIQUE INDEX ON employees (tenant_id) WHERE is_owner AND deleted_at IS NULL;
+   ```
+
+7. **CHECK constraints de la Fase 1** — `subscriptions.current_period_end > current_period_start`; en `tenant_settings`, el porcentaje de reembolso entre 0 y 100, obligatorio cuando `cancellation_refund_type = 'partial'`, y ventanas (`cancellation_policy_hours`, `default_buffer_minutes`) no negativas.
 
 ---
 

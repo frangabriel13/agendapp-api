@@ -12,6 +12,7 @@ export const TENANT_EXEMPT_MODELS = new Set<string>([
   'User',
   'RefreshToken',
   'Plan',
+  'Tenant', // no tiene columna tenantId: ÉL es el tenant. Se filtra por `id`.
   'AuditLog', // tenantId nullable: actions del sistema sin tenant
 ]);
 
