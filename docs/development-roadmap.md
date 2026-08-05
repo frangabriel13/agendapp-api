@@ -207,6 +207,20 @@ npx nest g resource modules/tenants
 
 **✅ Done cuando:** podés registrarte, recibir un token, llamar a `/auth/me` y ver tu tenant. Tests E2E del flujo completo.
 
+### ⏭️ Diferido — Emails transaccionales
+
+**Deadline: antes de la Fase 7 (portal público)**, no en la Fase 8. Lo único que
+bloquea esto es tener un proveedor de mail (Resend / SendGrid / SES) y un dominio
+con SPF/DKIM. **No** depende de BullMQ: la cola solo aporta reintentos y no
+bloquear la respuesta.
+
+- `POST /auth/forgot-password` + `POST /auth/reset-password` (tabla nueva `password_reset_tokens`).
+- `POST /auth/verify-email` + reenvío (el campo `users.email_verified_at` ya existe desde la Fase 1).
+
+Posponerlo no genera deuda: no toca nada de lo construido en la Fase 1, solo suma
+una tabla y endpoints. El riesgo real es el **reset de contraseña** — hasta que
+exista, a un usuario que olvida la clave hay que cambiársela a mano en la base.
+
 ---
 
 ## 🏬 FASE 2 — Estructura del negocio
