@@ -173,6 +173,6 @@ Al agregar una variable: extender `envSchema`, sumarla a `.env.example`, y leerl
 TypeORM migrations no aplican. Flujo Prisma:
 
 ```bash
-npx prisma migrate dev --name <descriptive_name>   # crea SQL + regenera cliente
-npx prisma generate                                # regenerar cliente tras cambios de schema
+npx prisma migrate dev --name <descriptive_name>   # crea y aplica el SQL (NO regenera el cliente)
+npx prisma generate                                # regenerar cliente: obligatorio tras cada migración
 ```

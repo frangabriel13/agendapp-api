@@ -6,6 +6,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { TenantContextModule } from './common/tenant-context';
 import { PrismaModule } from './prisma/prisma.module';
+import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
 import { validateEnv } from './config/env.validation';
 import type { Env } from './config/env.schema';
@@ -48,6 +49,7 @@ import type { Env } from './config/env.schema';
     ]),
     TenantContextModule,
     PrismaModule,
+    AuthModule,
     HealthModule,
   ],
   controllers: [],
