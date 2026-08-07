@@ -7,7 +7,7 @@
 
 ## 🧭 Decisiones generales del modelo
 
-- **Multi-tenancy:** una cuenta = un negocio. Todas las tablas de negocio llevan `tenant_id`.
+- **Multi-tenancy:** una cuenta = un negocio. Todas las tablas de negocio llevan: `tenant_id`.
 - **Soft delete:** todas las tablas relevantes tienen `deleted_at` en lugar de borrar registros.
 - **Auditoría:** tabla `audit_logs` desde el día 1.
 - **Owner:** siempre es un `Employee` más, con flag `is_owner`. Cuenta dentro del límite del plan.
