@@ -6,7 +6,6 @@ import {
   HttpStatus,
   Patch,
   Post,
-  UseGuards,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -19,6 +18,7 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { Public } from '../../common/decorators/public.decorator';
 import { AuthService } from './auth.service';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { AuthTokensDto } from './dto/auth-tokens.dto';
@@ -27,7 +27,6 @@ import { LoginDto } from './dto/login.dto';
 import { MeResponseDto } from './dto/me-response.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterDto } from './dto/register.dto';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import type { AuthenticatedUser } from './types/jwt-payload';
 
 /** Límite extra para los endpoints que aceptan credenciales. */
@@ -39,6 +38,7 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Post('register')
+  @Public()
   @Throttle(CREDENTIALS_THROTTLE)
   @ApiOperation({
     summary: 'Registra un negocio nuevo',
@@ -52,6 +52,7 @@ export class AuthController {
   }
 
   @Post('login')
+  @Public()
   @HttpCode(HttpStatus.OK)
   @Throttle(CREDENTIALS_THROTTLE)
   @ApiOperation({ summary: 'Inicia sesión' })
@@ -62,6 +63,7 @@ export class AuthController {
   }
 
   @Post('refresh')
+  @Public()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Renueva el access token',
@@ -75,11 +77,14 @@ export class AuthController {
   }
 
   @Post('logout')
+  @Public()
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary: 'Cierra la sesión',
     description:
-      'Revoca el refresh token enviado y toda su cadena de rotaciones.',
+      'Revoca el refresh token enviado y toda su cadena de rotaciones. ' +
+      'Es público a propósito: alcanza con presentar el refresh token, así se ' +
+      'puede cerrar sesión aunque el access token ya haya vencido.',
   })
   @ApiNoContentResponse()
   logout(@Body() dto: RefreshTokenDto): Promise<void> {
@@ -87,7 +92,6 @@ export class AuthController {
   }
 
   @Get('me')
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Devuelve el usuario, su negocio y su rol' })
   @ApiOkResponse({ type: MeResponseDto })
@@ -97,7 +101,6 @@ export class AuthController {
   }
 
   @Patch('password')
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.NO_CONTENT)
   @Throttle(CREDENTIALS_THROTTLE)

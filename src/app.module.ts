@@ -1,12 +1,21 @@
 import { randomUUID } from 'node:crypto';
-import { Module } from '@nestjs/common';
+import {
+  Module,
+  RequestMethod,
+  type MiddlewareConsumer,
+  type NestModule,
+} from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
-import { TenantContextModule } from './common/tenant-context';
+import {
+  TenantContextMiddleware,
+  TenantContextModule,
+} from './common/tenant-context';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
 import { HealthModule } from './modules/health/health.module';
 import { validateEnv } from './config/env.validation';
 import type { Env } from './config/env.schema';
@@ -53,6 +62,23 @@ import type { Env } from './config/env.schema';
     HealthModule,
   ],
   controllers: [],
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+  providers: [
+    // El orden importa: primero se corta por rate limit, después se autentica.
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // Guard global: todo endpoint nace protegido; se abre con `@Public()`.
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
+  ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  /**
+   * El middleware de tenant-context va sobre TODAS las rutas y tiene que correr
+   * antes que cualquier guard — por eso es middleware y no interceptor.
+   * `{*path}` es la sintaxis de wildcard de Express 5 (Nest 11); el viejo `'*'`
+   * sigue funcionando pero emite un warning de deprecación.
+   */
+  configure(consumer: MiddlewareConsumer): void {
+    consumer
+      .apply(TenantContextMiddleware)
+      .forRoutes({ path: '{*path}', method: RequestMethod.ALL });
+  }
+}

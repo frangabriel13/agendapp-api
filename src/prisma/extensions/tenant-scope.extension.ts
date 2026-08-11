@@ -52,6 +52,9 @@ type AnyOperationParams = {
  * - Si el caller NO montó contexto (`getStore() === undefined`) sobre un modelo
  *   no exento, lanza `TenantContextMissingError` (capturado por el filtro global
  *   como 500). Esto hace evidente un bug de falta de auth o middleware.
+ * - Si el store está montado pero el tenant sigue SIN RESOLVER (`tenant`
+ *   undefined: request público, o autenticado que nunca pasó por el guard),
+ *   también lanza. Nunca se degrada a "consulta sin filtro".
  * - Si el caller entró por `runWithoutTenant` (store con `tenant: null`),
  *   passthrough: la query corre sin filtro por tenant. Es el escape hatch
  *   explícito para auth pre-login, seeds, jobs y webhooks.
@@ -77,7 +80,9 @@ export function tenantScopeExtension(ctx: TenantContextService) {
 
           const store = ctx.getStore();
 
-          if (store === undefined) {
+          // `undefined` en cualquiera de los dos niveles = contexto no resuelto:
+          // o nunca se montó el ALS, o el request no llegó a autenticarse.
+          if (store === undefined || store.tenant === undefined) {
             throw new TenantContextMissingError(model, operation);
           }
 

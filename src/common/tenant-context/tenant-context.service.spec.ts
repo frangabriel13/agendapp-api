@@ -37,6 +37,40 @@ describe('TenantContextService', () => {
     expect(inside?.tenant).toBeNull();
   });
 
+  it('mount() deja el store montado pero sin resolver', () => {
+    const store = service.mount(() => service.getStore());
+    expect(store).toEqual({});
+    expect(store?.tenant).toBeUndefined();
+  });
+
+  it('set() resuelve el tenant sobre el store montado', () => {
+    const inside = service.mount(() => {
+      service.set({ tenantId: 't1', userId: 'u1', employeeId: 'e1' });
+      return {
+        tenantId: service.getTenantId(),
+        userId: service.getUserId(),
+        employeeId: service.getEmployeeId(),
+      };
+    });
+
+    expect(inside).toEqual({ tenantId: 't1', userId: 'u1', employeeId: 'e1' });
+    // El contexto no sobrevive fuera del mount.
+    expect(service.getTenantId()).toBeNull();
+  });
+
+  it('set() falla si nadie montó el contexto (falta el middleware)', () => {
+    expect(() => service.set({ tenantId: 't1', userId: 'u1' })).toThrow(
+      /TenantContextMiddleware/,
+    );
+  });
+
+  it('distingue "montado sin resolver" de runWithoutTenant', () => {
+    expect(service.mount(() => service.getStore())?.tenant).toBeUndefined();
+    expect(
+      service.runWithoutTenant(() => service.getStore())?.tenant,
+    ).toBeNull();
+  });
+
   it('aísla contextos en runs anidados con AsyncLocalStorage', () => {
     const outer = service.run({ tenantId: 'outer', userId: 'u' }, () => {
       const innerTenant = service.run({ tenantId: 'inner', userId: 'u' }, () =>
