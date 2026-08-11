@@ -9,13 +9,18 @@ export interface TenantContext {
 }
 
 /**
- * Wrapper guardado en el ALS. `tenant` es `null` cuando entramos por
- * `runWithoutTenant` (escape hatch consciente). Si `getStore()` devuelve
- * `undefined`, significa que el caller olvidó montar contexto — eso es
- * un bug que la extension de Prisma va a reportar como error 500.
+ * Wrapper guardado en el ALS. `tenant` tiene tres valores posibles y cada uno
+ * significa algo distinto para la extension de Prisma:
+ * - `TenantContext` → request autenticado: se inyecta el `tenantId` en la query.
+ * - `null`          → escape hatch consciente (`runWithoutTenant`): passthrough.
+ * - `undefined`     → store montado por el middleware pero todavía sin resolver
+ *   (request público o sin auth): la query scopeada falla.
+ *
+ * Si `getStore()` devuelve `undefined`, el ALS nunca se montó — eso es un bug
+ * (falta el middleware) que la extension reporta como error 500.
  */
-interface TenantContextStore {
-  tenant: TenantContext | null;
+export interface TenantContextStore {
+  tenant?: TenantContext | null;
 }
 
 @Injectable()
@@ -33,10 +38,40 @@ export class TenantContextService {
   }
 
   /**
+   * Monta un store VACÍO para todo el request. Lo usa `TenantContextMiddleware`:
+   * cuando corre el middleware, Nest todavía no ejecutó los guards, así que no
+   * hay `request.user` del cual sacar el tenant. El `JwtAuthGuard` lo completa
+   * después con `set()`.
+   */
+  mount<T>(fn: () => T): T {
+    return this.als.run({}, fn);
+  }
+
+  /**
+   * Resuelve el tenant sobre el store ya montado. Muta el objeto del ALS a
+   * propósito: así el contexto queda visible en el resto de los guards, en los
+   * interceptors y en el handler, sin tener que anidar otro `run()` (que
+   * obligaría a envolver la ejecución del handler y no se puede desde un guard).
+   */
+  set(ctx: TenantContext): void {
+    const store = this.als.getStore();
+
+    if (!store) {
+      throw new Error(
+        'No hay contexto montado en el AsyncLocalStorage: registrá ' +
+          'TenantContextMiddleware antes de llamar a set().',
+      );
+    }
+
+    store.tenant = ctx;
+  }
+
+  /**
    * Devuelve la "intención" del caller:
-   * - `{ tenant: ... }`   → request autenticado con tenant.
-   * - `{ tenant: null }`  → flow explícito sin tenant (`runWithoutTenant`).
-   * - `undefined`         → nunca se montó contexto: probablemente un bug.
+   * - `{ tenant: ... }`       → request autenticado con tenant.
+   * - `{ tenant: null }`      → flow explícito sin tenant (`runWithoutTenant`).
+   * - `{}` / `{ tenant: undefined }` → montado pero sin resolver (público).
+   * - `undefined`             → nunca se montó contexto: probablemente un bug.
    */
   getStore(): TenantContextStore | undefined {
     return this.als.getStore();

@@ -24,8 +24,8 @@ import { JwtStrategy } from './strategies/jwt.strategy';
   ],
   controllers: [AuthController],
   providers: [AuthService, PasswordService, RefreshTokenService, JwtStrategy],
-  // La Fase 1.4 monta el JwtAuthGuard como guard global desde AppModule y
-  // necesita la estrategia registrada acá.
+  // `JwtAuthGuard` está montado como guard global en AppModule y resuelve la
+  // estrategia 'jwt' que registra `JwtStrategy` acá.
   exports: [PassportModule, JwtModule],
 })
 export class AuthModule {}
