@@ -13,10 +13,12 @@ import {
   TenantContextMiddleware,
   TenantContextModule,
 } from './common/tenant-context';
+import { RolesGuard } from './common/guards/roles.guard';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
 import { HealthModule } from './modules/health/health.module';
+import { TenantsModule } from './modules/tenants/tenants.module';
 import { validateEnv } from './config/env.validation';
 import type { Env } from './config/env.schema';
 
@@ -60,6 +62,7 @@ import type { Env } from './config/env.schema';
     PrismaModule,
     AuthModule,
     HealthModule,
+    TenantsModule,
   ],
   controllers: [],
   providers: [
@@ -67,6 +70,9 @@ import type { Env } from './config/env.schema';
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     // Guard global: todo endpoint nace protegido; se abre con `@Public()`.
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    // Autorización por rol. Va último: necesita el `request.user` del anterior.
+    // No hace nada salvo que el handler declare `@Roles(...)`.
+    { provide: APP_GUARD, useClass: RolesGuard },
   ],
 })
 export class AppModule implements NestModule {
