@@ -196,6 +196,34 @@ describe('Branches (e2e)', () => {
         .expect(403);
     });
 
+    /**
+     * La razón de ser del `FOR UPDATE` sobre la fila del negocio: sin él, las
+     * cinco altas cuentan 0 sucursales al mismo tiempo, las cinco ven lugar y
+     * las cinco insertan. Este test solo tiene sentido contra Postgres real.
+     */
+    it('cinco altas simultáneas no se saltean el límite del plan', async () => {
+      const intentos = await Promise.all(
+        Array.from({ length: 5 }, (_, i) =>
+          request(server())
+            .post('/branches')
+            .set(...auth(tenant.accessToken))
+            .send({ name: `Sucursal ${i}` }),
+        ),
+      );
+
+      const creadas = intentos.filter((r) => r.status === 201);
+      const rechazadas = intentos.filter((r) => r.status === 403);
+
+      expect(creadas).toHaveLength(1);
+      expect(rechazadas).toHaveLength(4);
+
+      const listado = await request(server())
+        .get('/branches')
+        .set(...auth(tenant.accessToken))
+        .expect(200);
+      expect(listado.body).toHaveLength(1);
+    });
+
     it('borrarla sí libera el lugar', async () => {
       const branch = await createBranch(tenant.accessToken);
 

@@ -435,6 +435,35 @@ describe('Employees (e2e)', () => {
         .expect(403);
     });
 
+    /** Mismo caso que en sucursales: el lock es lo único que lo evita. */
+    it('varias invitaciones simultáneas no se saltean el límite', async () => {
+      // Pro admite 4 con el dueño incluido: quedan 3 lugares para 6 intentos.
+      await switchPlan(prisma, tenant.tenantId, 'pro');
+
+      const intentos = await Promise.all(
+        Array.from({ length: 6 }, (_, i) =>
+          request(server())
+            .post('/employees')
+            .set(...auth(tenant.accessToken))
+            .send({
+              email: `simultanea-${i}@e2e.test`,
+              firstName: 'Ana',
+              lastName: 'Gómez',
+              role: 'PROFESSIONAL',
+            }),
+        ),
+      );
+
+      expect(intentos.filter((r) => r.status === 201)).toHaveLength(3);
+      expect(intentos.filter((r) => r.status === 403)).toHaveLength(3);
+
+      const listado = await request(server())
+        .get('/employees')
+        .set(...auth(tenant.accessToken))
+        .expect(200);
+      expect(listado.body).toHaveLength(4); // el dueño + los 3 invitados
+    });
+
     it('dar de baja a alguien libera el lugar', async () => {
       await switchPlan(prisma, tenant.tenantId, 'pro');
 

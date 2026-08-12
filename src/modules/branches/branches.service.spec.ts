@@ -48,6 +48,7 @@ describe('BranchesService', () => {
   let prisma: {
     scoped: {
       $transaction: jest.Mock;
+      $queryRaw: jest.Mock;
       tenant: { findFirst: jest.Mock };
       branch: {
         findFirst: jest.Mock;
@@ -88,6 +89,7 @@ describe('BranchesService', () => {
         $transaction: jest.fn((callback: (tx: unknown) => unknown) =>
           callback(prisma.scoped),
         ),
+        $queryRaw: jest.fn().mockResolvedValue([]),
         tenant: { findFirst: jest.fn() },
         branch: {
           findFirst: jest.fn().mockResolvedValue(BRANCH_ROW),
@@ -156,6 +158,29 @@ describe('BranchesService', () => {
       await expect(service.create({ name: 'Otra' })).rejects.toThrow(
         /Profesional permite hasta 2 sucursales/,
       );
+    });
+
+    /**
+     * Sin el lock, dos altas simultáneas contarían las dos lo mismo y pasarían
+     * las dos. Se toma dentro de la transacción y antes de contar.
+     */
+    it('lockea la fila del negocio antes de contar', async () => {
+      planWith(3);
+
+      await service.create({ name: 'Otra' });
+
+      expect(prisma.scoped.$queryRaw).toHaveBeenCalledTimes(1);
+      const lockOrder = prisma.scoped.$queryRaw.mock.invocationCallOrder[0];
+      const countOrder = prisma.scoped.branch.count.mock.invocationCallOrder[0];
+      expect(lockOrder).toBeLessThan(countOrder);
+    });
+
+    it('con plan sin tope no lockea nada', async () => {
+      planWith(null, 'Empresa');
+
+      await service.create({ name: 'Otra' });
+
+      expect(prisma.scoped.$queryRaw).not.toHaveBeenCalled();
     });
 
     it('sin contexto de tenant es un error de wiring, no del cliente', async () => {

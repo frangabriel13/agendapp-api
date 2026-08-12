@@ -28,9 +28,9 @@ export const TENANT_EXEMPT_MODELS = new Set<string>([
  * data: scopedCreate<Prisma.BranchUncheckedCreateInput>({ name: dto.name })
  * ```
  *
- * No pasar el `tenantId` a mano no es solo comodidad: la extension hace
- * `{ tenantId, ...data }`, así que un `tenantId` explícito le ganaría al del
- * contexto.
+ * Pasar el `tenantId` a mano igual no serviría: `applyTenantScope` lo escribe
+ * último, así que el del contexto pisa al del caller. Este helper evita el
+ * `as any` que haría falta para conformar a TypeScript.
  */
 export function scopedCreate<T extends { tenantId: string }>(
   data: Omit<T, 'tenantId'>,
@@ -66,6 +66,54 @@ type AnyOperationParams = {
   args: unknown;
   query: (args: unknown) => Promise<unknown>;
 };
+
+/**
+ * Mete el `tenantId` en los args de una operación. Función pura y exportada
+ * para poder testearla sin levantar Prisma: es la parte de la extension donde
+ * un error se paga caro.
+ *
+ * **El `tenantId` del contexto va SIEMPRE último en el spread**, así le gana a
+ * cualquiera que venga en los args. Al revés, un `where: { tenantId: 'otro' }`
+ * escrito por error (o armado con input sin filtrar) pisaría al del contexto y
+ * la consulta se escaparía del negocio — justo lo que esta extension existe
+ * para impedir. Cuando de verdad hace falta consultar sin filtro, el camino es
+ * `runWithoutTenant`, que es explícito y se ve en el código.
+ */
+export function applyTenantScope(
+  operation: string,
+  args: unknown,
+  tenantId: string,
+): unknown {
+  if (
+    READ_OPS_WITH_FLEXIBLE_WHERE.has(operation) ||
+    WRITE_OPS_WITH_WHERE.has(operation)
+  ) {
+    const opArgs = (args ?? {}) as { where?: Record<string, unknown> };
+    return { ...opArgs, where: { ...(opArgs.where ?? {}), tenantId } };
+  }
+
+  if (operation === 'create') {
+    const createArgs = (args ?? {}) as { data?: Record<string, unknown> };
+    return { ...createArgs, data: { ...(createArgs.data ?? {}), tenantId } };
+  }
+
+  if (operation === 'createMany') {
+    const createManyArgs = (args ?? {}) as {
+      data?: Record<string, unknown> | Record<string, unknown>[];
+    };
+    const data = createManyArgs.data;
+
+    return {
+      ...createManyArgs,
+      data: Array.isArray(data)
+        ? data.map((row) => ({ ...row, tenantId }))
+        : { ...(data ?? {}), tenantId },
+    };
+  }
+
+  // findUnique / findUniqueOrThrow: sin cambios (ver el comentario de abajo).
+  return args;
+}
 
 /**
  * Inyecta `tenantId` en todas las queries Prisma sobre modelos de negocio.
@@ -113,45 +161,9 @@ export function tenantScopeExtension(ctx: TenantContextService) {
             return query(args);
           }
 
-          const tenantId = store.tenant.tenantId;
-
-          if (
-            READ_OPS_WITH_FLEXIBLE_WHERE.has(operation) ||
-            WRITE_OPS_WITH_WHERE.has(operation)
-          ) {
-            const opArgs = (args ?? {}) as { where?: Record<string, unknown> };
-            return query({
-              ...opArgs,
-              where: { tenantId, ...(opArgs.where ?? {}) },
-            });
-          }
-
-          if (operation === 'create') {
-            const createArgs = (args ?? {}) as {
-              data?: Record<string, unknown>;
-            };
-            return query({
-              ...createArgs,
-              data: { tenantId, ...(createArgs.data ?? {}) },
-            });
-          }
-
-          if (operation === 'createMany') {
-            const createManyArgs = (args ?? {}) as {
-              data?: Record<string, unknown> | Record<string, unknown>[];
-            };
-            const data = createManyArgs.data;
-            const enrichedData = Array.isArray(data)
-              ? data.map((row) => ({ tenantId, ...row }))
-              : { tenantId, ...(data ?? {}) };
-            return query({
-              ...createManyArgs,
-              data: enrichedData,
-            });
-          }
-
-          // findUnique / findUniqueOrThrow: passthrough (ver comentario arriba).
-          return query(args);
+          return query(
+            applyTenantScope(operation, args, store.tenant.tenantId),
+          );
         }) as any,
       },
     },

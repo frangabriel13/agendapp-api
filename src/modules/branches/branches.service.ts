@@ -18,7 +18,10 @@ import {
   timeOfDayToMinutes,
 } from '../../common/utils/time-of-day.util';
 import { scopedCreate } from '../../prisma/extensions';
-import { PrismaService } from '../../prisma/prisma.service';
+import {
+  PrismaService,
+  type ScopedTransactionClient,
+} from '../../prisma/prisma.service';
 import type {
   BranchDetailResponseDto,
   BranchResponseDto,
@@ -97,12 +100,13 @@ export class BranchesService {
   ) {}
 
   async create(dto: CreateBranchDto): Promise<BranchDetailResponseDto> {
-    await this.assertBranchQuotaAvailable();
-
+    const tenantId = this.requireTenantId('create');
     const week = this.toWeekRows(dto.businessHours ?? defaultWeek());
 
     try {
       const branch = await this.prisma.scoped.$transaction(async (tx) => {
+        await this.assertBranchQuotaAvailable(tenantId, tx);
+
         const created = await tx.branch.create({
           data: scopedCreate<Prisma.BranchUncheckedCreateInput>({
             name: dto.name,
@@ -324,15 +328,17 @@ export class BranchesService {
    * existiendo y sigue ocupando un lugar del plan. Para liberar uno hay que
    * borrarla.
    *
-   * Nota: entre el count y el insert queda una ventana en la que dos requests
-   * simultáneos podrían pasar los dos. Cerrarla del todo pide un lock o un
-   * contador con constraint; para el ritmo con que un negocio abre sucursales,
-   * el chequeo alcanza.
+   * Corre DENTRO de la transacción del alta y, cuando el plan tiene tope,
+   * arranca lockeando la fila del negocio. Sin ese lock, dos altas simultáneas
+   * contarían las dos lo mismo, verían lugar las dos e insertarían las dos: el
+   * negocio terminaría con una sucursal más de las que paga. Con el lock, la
+   * segunda espera a que la primera termine y recién ahí cuenta.
    */
-  private async assertBranchQuotaAvailable(): Promise<void> {
-    const tenantId = this.requireTenantId('create');
-
-    const tenant = await this.prisma.scoped.tenant.findFirst({
+  private async assertBranchQuotaAvailable(
+    tenantId: string,
+    tx: ScopedTransactionClient,
+  ): Promise<void> {
+    const tenant = await tx.tenant.findFirst({
       where: { id: tenantId },
       select: { plan: { select: { name: true, maxBranches: true } } },
     });
@@ -347,7 +353,11 @@ export class BranchesService {
       return;
     }
 
-    const current = await this.prisma.scoped.branch.count();
+    // Serializa las altas del mismo negocio. Ojo: `tenants` NO se toca acá, se
+    // usa como cerrojo — es la fila natural, porque el cupo es del negocio.
+    await tx.$queryRaw`SELECT id FROM tenants WHERE id = ${tenantId}::uuid FOR UPDATE`;
+
+    const current = await tx.branch.count();
 
     if (current >= maxBranches) {
       throw new ForbiddenException(

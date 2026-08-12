@@ -51,6 +51,7 @@ describe('EmployeesService', () => {
     scoped: {
       user: { findFirst: jest.Mock; create: jest.Mock; update: jest.Mock };
       $transaction: jest.Mock;
+      $queryRaw: jest.Mock;
       tenant: { findFirst: jest.Mock };
       branch: { findMany: jest.Mock };
       employee: {
@@ -113,6 +114,7 @@ describe('EmployeesService', () => {
         $transaction: jest.fn((callback: (tx: unknown) => unknown) =>
           callback(prisma.scoped),
         ),
+        $queryRaw: jest.fn().mockResolvedValue([]),
         tenant: { findFirst: jest.fn() },
         branch: { findMany: jest.fn().mockResolvedValue([]) },
         employee: {
@@ -256,6 +258,20 @@ describe('EmployeesService', () => {
       await service.invite(VALID_INVITE);
 
       expect(prisma.scoped.employee.count).not.toHaveBeenCalled();
+      expect(prisma.scoped.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    /** Mismo cerrojo que en sucursales: se toma antes de contar. */
+    it('lockea la fila del negocio antes de contar', async () => {
+      planWith(4);
+
+      await service.invite(VALID_INVITE);
+
+      expect(prisma.scoped.$queryRaw).toHaveBeenCalledTimes(1);
+      const lockOrder = prisma.scoped.$queryRaw.mock.invocationCallOrder[0];
+      const countOrder =
+        prisma.scoped.employee.count.mock.invocationCallOrder[0];
+      expect(lockOrder).toBeLessThan(countOrder);
     });
   });
 
