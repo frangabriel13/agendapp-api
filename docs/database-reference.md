@@ -94,6 +94,10 @@ Cada negocio suscripto a la plataforma.
 | `updated_at` | TIMESTAMP | |
 | `deleted_at` | TIMESTAMP | nullable |
 
+**Notas:**
+- `tenants` NO lleva `tenant_id` (él ES el tenant): está en `TENANT_EXEMPT_MODELS` y los services lo filtran por `id`.
+- El `slug` se genera del `business_name` al registrarse (con sufijo numérico si choca) y **hoy no se puede editar por la API**: es la URL pública del portal (Fase 7) y cambiarlo rompe los links ya compartidos.
+
 ### `tenant_branding`
 Personalización visual del portal público.
 
@@ -122,6 +126,10 @@ Configuraciones generales del negocio.
 | `default_buffer_minutes` | INT | default 0 |
 | `created_at` | TIMESTAMP | |
 | `updated_at` | TIMESTAMP | |
+
+**Notas:**
+- `tenant_branding` y `tenant_settings` se crean en la misma transacción que el tenant (`POST /auth/register`), así que ningún negocio existe sin ellas. La API expone `GET/PATCH /tenants/me/branding` y `/settings`; no hay alta ni baja.
+- Los CHECK de coherencia de la política de cancelación ya están en la base (ver "Constraints críticos", punto 7) y el service repite la validación para devolver un 400 legible en vez de un 500 de Postgres.
 
 ---
 
@@ -637,7 +645,7 @@ users ──< employees >── tenants ──< tenant_branding
    CREATE UNIQUE INDEX ON employees (tenant_id) WHERE is_owner AND deleted_at IS NULL;
    ```
 
-7. **CHECK constraints de la Fase 1** — `subscriptions.current_period_end > current_period_start`; en `tenant_settings`, el porcentaje de reembolso entre 0 y 100, obligatorio cuando `cancellation_refund_type = 'partial'`, y ventanas (`cancellation_policy_hours`, `default_buffer_minutes`) no negativas.
+7. **CHECK constraints de la Fase 1** — ya implementados en la migración `auth_and_tenant_base`: `subscriptions.current_period_end > current_period_start`; en `tenant_settings`, el porcentaje de reembolso entre 0 y 100, obligatorio cuando `cancellation_refund_type = 'partial'`, y ventanas (`cancellation_policy_hours`, `default_buffer_minutes`) no negativas.
 
 ---
 
