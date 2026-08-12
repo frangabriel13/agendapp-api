@@ -8,12 +8,9 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
-import { trim } from '../../../common/utils/trim.transform';
+import { lowercaseTrim, trim } from '../../../common/utils/trim.transform';
 
 /** Normaliza strings de entrada: recorta espacios sobrantes. */
-const lowercaseTrim = ({ value }: { value: unknown }): unknown =>
-  typeof value === 'string' ? value.trim().toLowerCase() : value;
-
 export class RegisterDto {
   @ApiProperty({ example: 'ana@peluqueriaana.com', maxLength: 255 })
   @Transform(lowercaseTrim)

@@ -44,7 +44,7 @@ Usuarios que se logean al sistema (owner + empleados).
 |---|---|---|
 | `id` | UUID | PK |
 | `email` | VARCHAR | UNIQUE |
-| `password_hash` | VARCHAR | argon2 |
+| `password_hash` | VARCHAR | argon2; **nullable**: ver abajo |
 | `first_name` | VARCHAR | |
 | `last_name` | VARCHAR | |
 | `phone` | VARCHAR | nullable |
@@ -53,6 +53,8 @@ Usuarios que se logean al sistema (owner + empleados).
 | `created_at` | TIMESTAMP | |
 | `updated_at` | TIMESTAMP | |
 | `deleted_at` | TIMESTAMP | nullable (soft delete) |
+
+`password_hash` es nullable desde la Fase 2.2: un empleado invitado tiene cuenta creada pero todavía no eligió su contraseña. **Mientras esté en null no puede loguearse** — `AuthService.login` lo rechaza igual que a un email desconocido, para no delatar qué cuentas existen. Se completa al aceptar la invitación (ver `employee_invitations`).
 
 ### `refresh_tokens`
 Tokens de refresh para JWT, con rotación y detección de reuso.
@@ -286,7 +288,25 @@ Profesionales y administrativos del negocio.
 - `UNIQUE(user_id)` — hoy un usuario pertenece a **un solo negocio**, así que el unique es sobre `user_id` solo (subsume al `UNIQUE(tenant_id, user_id)` original). Si algún día soportamos usuarios multi-negocio, se reemplaza por el compuesto.
 - `UNIQUE(tenant_id) WHERE is_owner AND deleted_at IS NULL` — índice parcial: un solo owner activo por negocio.
 
-**Estado de implementación:** la Fase 1 creó la versión mínima (`tenant_id`, `user_id`, `role`, `is_owner`, `is_active` + timestamps), porque `/auth/register` necesita crear al owner. `hired_at`, `bio` y `avatar_url` se agregan en la Fase 2.
+**Estado de implementación:** completa desde la Fase 2.2 (migración `20260812122603_employees`), que sumó `hired_at`, `bio` y `avatar_url` a la versión mínima que había creado la Fase 1.
+
+### `employee_invitations`
+Link de un solo uso para que un empleado nuevo se cree la contraseña.
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| `id` | UUID | PK; es la primera mitad del token |
+| `tenant_id` | UUID | FK → tenants |
+| `employee_id` | UUID | FK → employees |
+| `token_hash` | VARCHAR | hash argon2 del secreto |
+| `expires_at` | TIMESTAMP | |
+| `accepted_at` | TIMESTAMP | nullable; se completa al canjearlo |
+| `revoked_at` | TIMESTAMP | nullable; reinvitar revoca la anterior |
+| `created_at` | TIMESTAMP | |
+
+**Constraints:** `UNIQUE(employee_id) WHERE accepted_at IS NULL AND revoked_at IS NULL` — índice parcial: una sola invitación viva por empleado, así "la invitación pendiente" no es ambigua y no quedan dos links válidos a la vez.
+
+Mismo esquema que `refresh_tokens`: el token que viaja es `<id>.<secret>` y en la base solo queda el hash del secreto, así que **el link se muestra una sola vez**.
 
 ### `employee_branches`
 Sucursales donde trabaja cada empleado.
@@ -294,6 +314,7 @@ Sucursales donde trabaja cada empleado.
 | Campo | Tipo | Notas |
 |---|---|---|
 | `id` | UUID | PK |
+| `tenant_id` | UUID | FK → tenants |
 | `employee_id` | UUID | FK → employees |
 | `branch_id` | UUID | FK → branches |
 | `created_at` | TIMESTAMP | |
@@ -306,11 +327,18 @@ Horario semanal por empleado y sucursal (puede ser distinto en cada sucursal).
 | Campo | Tipo | Notas |
 |---|---|---|
 | `id` | UUID | PK |
+| `tenant_id` | UUID | FK → tenants |
 | `employee_id` | UUID | FK → employees |
 | `branch_id` | UUID | FK → branches |
-| `day_of_week` | INT | |
+| `day_of_week` | SMALLINT | 0=domingo, 6=sábado |
 | `starts_at` | TIME | |
 | `ends_at` | TIME | |
+| `created_at` | TIMESTAMP | |
+| `updated_at` | TIMESTAMP | |
+
+**Constraints:** `CHECK (day_of_week BETWEEN 0 AND 6)` y `CHECK (ends_at > starts_at)`.
+
+**Una fila por TRAMO, no por día** — es la diferencia clave con `branch_business_hours`. Un profesional de 09:00 a 13:00 y de 16:00 a 20:00 lleva dos filas del mismo día (turno partido, moneda corriente en el rubro), y un día sin filas es un día que no trabaja. Que los tramos no se pisen entre sí lo valida la app, incluso entre sucursales distintas: la persona es una sola.
 
 ### `employee_time_off`
 Vacaciones, ausencias, bloqueos personales.
@@ -318,12 +346,21 @@ Vacaciones, ausencias, bloqueos personales.
 | Campo | Tipo | Notas |
 |---|---|---|
 | `id` | UUID | PK |
+| `tenant_id` | UUID | FK → tenants |
 | `employee_id` | UUID | FK → employees |
 | `branch_id` | UUID | FK → branches, nullable (null = todas) |
 | `starts_at` | TIMESTAMP | |
 | `ends_at` | TIMESTAMP | |
 | `reason` | VARCHAR | nullable |
 | `created_at` | TIMESTAMP | |
+| `updated_at` | TIMESTAMP | |
+| `deleted_at` | TIMESTAMP | nullable |
+
+**Constraints:** `CHECK (ends_at > starts_at)`.
+
+Acá `starts_at`/`ends_at` sí son instantes (`TIMESTAMPTZ`), no hora de pared: una ausencia arranca un día y termina otro.
+
+**Estado de implementación:** las cuatro tablas existen desde la Fase 2.2. Igual que en sucursales, las hijas llevan `tenant_id` aunque se llegue a ellas por `employee_id`, para que la extension de tenant-scope y la RLS de la Fase 8 tengan por dónde filtrarlas.
 
 ---
 

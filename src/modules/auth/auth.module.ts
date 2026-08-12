@@ -26,6 +26,8 @@ import { JwtStrategy } from './strategies/jwt.strategy';
   providers: [AuthService, PasswordService, RefreshTokenService, JwtStrategy],
   // `JwtAuthGuard` está montado como guard global en AppModule y resuelve la
   // estrategia 'jwt' que registra `JwtStrategy` acá.
-  exports: [PassportModule, JwtModule],
+  // `PasswordService` sale afuera para que la activación de un empleado hashee
+  // con el mismo algoritmo y los mismos parámetros que el registro.
+  exports: [PassportModule, JwtModule, PasswordService],
 })
 export class AuthModule {}

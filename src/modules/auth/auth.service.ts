@@ -156,7 +156,11 @@ export class AuthService {
       },
     });
 
-    if (!user) {
+    // `passwordHash` en null = empleado invitado que todavía no aceptó la
+    // invitación. Se responde exactamente igual que a un email desconocido:
+    // decir "esa cuenta existe pero está pendiente" delataría quién trabaja
+    // en el negocio.
+    if (!user || user.passwordHash === null) {
       // Gastamos el mismo tiempo que en el camino feliz para no delatar
       // qué emails están registrados.
       await this.passwords.burnTime();
@@ -287,7 +291,9 @@ export class AuthService {
       select: { id: true, passwordHash: true },
     });
 
-    if (!user) {
+    // Sin contraseña no se puede haber llegado hasta acá con un token válido,
+    // pero el tipo lo admite: se trata igual que una sesión que ya no sirve.
+    if (!user || user.passwordHash === null) {
       throw new UnauthorizedException('La sesión ya no es válida');
     }
 

@@ -5,6 +5,7 @@ import {
   createTestApp,
   registerTenant,
   resetDatabase,
+  switchPlan,
   type RegisteredTenant,
   type TestApp,
 } from './utils/e2e-app';
@@ -50,15 +51,6 @@ describe('Branches (e2e)', () => {
   });
 
   const server = () => app.getHttpServer();
-
-  /** El plan del registro es "básico", que permite una sola sucursal. */
-  async function switchPlan(tenantId: string, slug: string): Promise<void> {
-    const plan = await prisma.plan.findUnique({ where: { slug } });
-    await prisma.tenant.update({
-      where: { id: tenantId },
-      data: { planId: plan!.id },
-    });
-  }
 
   async function createBranch(
     token: string,
@@ -175,7 +167,7 @@ describe('Branches (e2e)', () => {
     });
 
     it('con un plan sin tope se pueden crear varias', async () => {
-      await switchPlan(tenant.tenantId, 'empresa');
+      await switchPlan(prisma, tenant.tenantId, 'empresa');
 
       await createBranch(tenant.accessToken, { name: 'Sucursal Centro' });
       await createBranch(tenant.accessToken, { name: 'Sucursal Palermo' });
@@ -222,7 +214,7 @@ describe('Branches (e2e)', () => {
 
   describe('Nombre repetido', () => {
     beforeEach(async () => {
-      await switchPlan(tenant.tenantId, 'empresa');
+      await switchPlan(prisma, tenant.tenantId, 'empresa');
     });
 
     it('no deja dos sucursales con el mismo nombre', async () => {
@@ -272,7 +264,7 @@ describe('Branches (e2e)', () => {
 
   describe('GET /branches', () => {
     beforeEach(async () => {
-      await switchPlan(tenant.tenantId, 'empresa');
+      await switchPlan(prisma, tenant.tenantId, 'empresa');
     });
 
     it('ordena por nombre y filtra por estado', async () => {

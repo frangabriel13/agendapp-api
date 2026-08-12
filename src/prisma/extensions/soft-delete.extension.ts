@@ -15,6 +15,7 @@ export const SOFT_DELETE_EXEMPT_MODELS = new Set<string>([
   'TenantSettings',
   'BranchBusinessHour',
   'BranchSpecialDay',
+  'EmployeeInvitation', // token de un solo uso, como RefreshToken
   'EmployeeBranch',
   'EmployeeSchedule',
   'EmployeeService',

@@ -1,12 +1,14 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Env } from '../../config/env.schema';
+import {
+  buildOpaqueToken,
+  generateTokenSecret,
+  parseOpaqueToken,
+} from '../../common/utils/opaque-token.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PasswordService } from './password.service';
-
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -43,7 +45,7 @@ export class RefreshTokenService {
 
   /** Emite un token nuevo. Sin `familyId` arranca una sesión nueva. */
   async issue(userId: string, familyId?: string): Promise<string> {
-    const secret = randomBytes(32).toString('base64url');
+    const secret = generateTokenSecret();
     const tokenHash = await this.passwords.hash(secret);
 
     const row = await this.prisma.refreshToken.create({
@@ -56,7 +58,7 @@ export class RefreshTokenService {
       select: { id: true },
     });
 
-    return `${row.id}.${secret}`;
+    return buildOpaqueToken(row.id, secret);
   }
 
   /**
@@ -91,7 +93,7 @@ export class RefreshTokenService {
       );
     }
 
-    const secret = randomBytes(32).toString('base64url');
+    const secret = generateTokenSecret();
     const tokenHash = await this.passwords.hash(secret);
 
     const created = await this.prisma.$transaction(async (tx) => {
@@ -113,7 +115,7 @@ export class RefreshTokenService {
 
     return {
       userId: stored.userId,
-      refreshToken: `${created.id}.${secret}`,
+      refreshToken: buildOpaqueToken(created.id, secret),
     };
   }
 
@@ -158,16 +160,14 @@ export class RefreshTokenService {
     expiresAt: Date;
     revokedAt: Date | null;
   }> {
-    const separator = presentedToken.indexOf('.');
-    const id = separator === -1 ? '' : presentedToken.slice(0, separator);
-    const secret = separator === -1 ? '' : presentedToken.slice(separator + 1);
+    const parsed = parseOpaqueToken(presentedToken);
 
-    if (!UUID_PATTERN.test(id) || secret.length === 0) {
+    if (!parsed) {
       throw new UnauthorizedException('Refresh token inválido');
     }
 
     const stored = await this.prisma.refreshToken.findUnique({
-      where: { id },
+      where: { id: parsed.id },
       select: {
         id: true,
         userId: true,
@@ -182,7 +182,10 @@ export class RefreshTokenService {
       throw new UnauthorizedException('Refresh token inválido');
     }
 
-    const matches = await this.passwords.verify(stored.tokenHash, secret);
+    const matches = await this.passwords.verify(
+      stored.tokenHash,
+      parsed.secret,
+    );
 
     if (!matches) {
       throw new UnauthorizedException('Refresh token inválido');

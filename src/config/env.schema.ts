@@ -27,6 +27,18 @@ export const envSchema = z.object({
   // --- Negocio ------------------------------------------------------------
   /** Días de prueba que recibe un tenant nuevo al registrarse. */
   TRIAL_DAYS: z.coerce.number().int().positive().default(14),
+
+  /**
+   * Base de las URLs que se le muestran al usuario final (hoy, el link de
+   * activación de un empleado invitado). Es el frontend, no esta API.
+   */
+  APP_BASE_URL: z.string().url().default('http://localhost:3000'),
+
+  /**
+   * Vida del link de invitación de un empleado, en horas. Corto a propósito:
+   * mientras está vivo, cualquiera con el link puede tomar esa cuenta.
+   */
+  EMPLOYEE_INVITATION_TTL_HOURS: z.coerce.number().int().positive().default(72),
 });
 
 export type Env = z.infer<typeof envSchema>;

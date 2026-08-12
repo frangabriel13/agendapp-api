@@ -19,6 +19,7 @@ import { RolesGuard } from './common/guards/roles.guard';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BranchesModule } from './modules/branches/branches.module';
+import { EmployeesModule } from './modules/employees/employees.module';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
 import { HealthModule } from './modules/health/health.module';
 import { TenantsModule } from './modules/tenants/tenants.module';
@@ -68,6 +69,7 @@ import type { Env } from './config/env.schema';
     HealthModule,
     TenantsModule,
     BranchesModule,
+    EmployeesModule,
   ],
   controllers: [],
   providers: [
