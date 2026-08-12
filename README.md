@@ -363,7 +363,7 @@ Resumen a hoy:
 - Empleados: invitación con link de activación, permisos por rol, sucursales
   asignadas, horario semanal por sucursal (con turno partido) y ausencias.
 
-- Suite de tests: 167 unitarios + 132 e2e contra Postgres real (flujo completo de
+- Suite de tests: 193 unitarios + 134 e2e contra Postgres real (flujo completo de
   registro a edición del negocio, invitación y activación de empleados, rotación
   de tokens y aislamiento entre negocios).
 

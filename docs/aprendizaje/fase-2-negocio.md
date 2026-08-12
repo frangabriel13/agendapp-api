@@ -26,7 +26,7 @@ en su negocio.
 - ✅ 8 modelos nuevos: sucursales con horarios y feriados, empleados con invitación,
   sucursales asignadas, horario semanal y ausencias.
 - ✅ 24 endpoints nuevos (11 de sucursales + 13 de empleados).
-- ✅ 132 tests e2e contra Postgres real + 167 unitarios.
+- ✅ 134 tests e2e contra Postgres real + 193 unitarios.
 - ⏭️ Diferido a propósito: mandar por mail el link de invitación (hoy vuelve en la
   respuesta). Misma deadline que el resto de los mails: antes de la Fase 7.
 
@@ -199,16 +199,35 @@ data: scopedCreate<Prisma.BranchUncheckedCreateInput>({ name: dto.name });
 
 Sigue habiendo un cast, pero acotado y con un nombre que explica por qué existe.
 
-### 11. Los límites del plan y una carrera que decidí no correr
+Buscando esto encontré algo peor: la extension armaba `{ tenantId, ...data }`, con el
+spread **después**. O sea que un `tenantId` que viniera en los args le ganaba al del
+contexto. La red de seguridad tenía un agujero en su propia red. Hoy va al revés
+(`{ ...data, tenantId }`), y la parte que inyecta está extraída como función pura
+(`applyTenantScope`) para poder testearla sin levantar Prisma. Moraleja: **el orden de un
+spread puede ser una decisión de seguridad**, no un detalle de estilo.
 
-Antes de crear una sucursal o invitar a alguien, se cuenta lo que hay y se compara con el
-plan. Entre el `count` y el `INSERT` queda una ventana en la que dos requests simultáneos
-podrían pasar los dos.
+### 11. Contar y después insertar es una carrera (y cómo se cierra)
 
-Decidí **no cerrarla**, y dejarlo escrito en el código. Cerrarla pide un advisory lock o un
-contador con constraint; el costo no se justifica para algo que un negocio hace tres veces
-por año. Lo que sí me importa es que sea una decisión anotada y no un descuido: la
-diferencia entre las dos cosas es solo el comentario.
+Antes de crear una sucursal o invitar a alguien se cuenta lo que hay y se compara con el
+plan. El problema: entre el `count` y el `INSERT` hay una ventana. Si entran dos requests
+al mismo tiempo, los dos cuentan lo mismo, los dos ven lugar y los dos insertan.
+
+La solución es **lockear la fila del negocio** dentro de la misma transacción, antes de
+contar:
+
+```sql
+SELECT id FROM tenants WHERE id = $1 FOR UPDATE
+```
+
+La tabla `tenants` no se modifica ahí: se usa como **cerrojo**. Es la fila natural para
+esto, porque el cupo es del negocio. El segundo request se queda esperando en esa línea
+hasta que el primero termina, y recién entonces cuenta — ahora sí, viendo la sucursal que
+el otro acaba de crear.
+
+Lo que más me sirvió: **el test de concurrencia lo escribí y después lo verifiqué al
+revés**. Saqué el lock, corrí el test y fallé a propósito (entraron 2 sucursales en un plan
+de 1). Un test de carrera que pasa igual sin el arreglo no prueba nada, y es facilísimo
+escribir uno así sin darse cuenta.
 
 ### 12. Proteger al dueño y a uno mismo
 
@@ -262,7 +281,9 @@ Preguntas para responder en voz alta:
 7. ¿Por qué existe `scopedCreate` en vez de un `as any`?
 8. ¿Qué diferencia hay entre desactivar y borrar, y cuál libera lugar del plan?
 9. ¿Por qué las reglas de horario están escritas dos veces?
-10. ¿Qué carrera quedó abierta en los límites del plan y por qué no la cerré?
+10. ¿Por qué el chequeo del límite del plan corre dentro de la transacción y lockea la fila del negocio?
+11. ¿Por qué el `tenantId` del contexto va último en el spread y no primero?
+12. ¿Cómo sé que mi test de concurrencia prueba algo?
 
 ---
 

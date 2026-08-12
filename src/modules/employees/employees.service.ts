@@ -18,7 +18,10 @@ import {
   timeOfDayToMinutes,
 } from '../../common/utils/time-of-day.util';
 import { scopedCreate } from '../../prisma/extensions';
-import { PrismaService } from '../../prisma/prisma.service';
+import {
+  PrismaService,
+  type ScopedTransactionClient,
+} from '../../prisma/prisma.service';
 import { EmployeeInvitationService } from './employee-invitations.service';
 import type {
   EmployeeShiftDto,
@@ -115,7 +118,7 @@ export class EmployeesService {
    * invitación sería un fantasma sin forma de activarse.
    */
   async invite(dto: InviteEmployeeDto): Promise<EmployeeInvitationResponseDto> {
-    await this.assertEmployeeQuotaAvailable();
+    const tenantId = this.requireTenantId('invite');
     await this.assertEmailAvailable(dto.email);
     await this.assertBranchesExist(dto.branchIds ?? []);
 
@@ -123,6 +126,8 @@ export class EmployeesService {
 
     const { employee, invitationId } = await this.prisma.scoped
       .$transaction(async (tx) => {
+        await this.assertEmployeeQuotaAvailable(tenantId, tx);
+
         const user = await tx.user.create({
           data: {
             email: dto.email,
@@ -487,11 +492,16 @@ export class EmployeesService {
    *
    * Los invitados que todavía no aceptaron también cuentan: la fila ya existe y
    * el lugar está tomado.
+   *
+   * Corre DENTRO de la transacción del alta y, cuando el plan tiene tope,
+   * arranca lockeando la fila del negocio: sin eso, dos invitaciones
+   * simultáneas contarían las dos lo mismo y entrarían las dos.
    */
-  private async assertEmployeeQuotaAvailable(): Promise<void> {
-    const tenantId = this.requireTenantId('invite');
-
-    const tenant = await this.prisma.scoped.tenant.findFirst({
+  private async assertEmployeeQuotaAvailable(
+    tenantId: string,
+    tx: ScopedTransactionClient,
+  ): Promise<void> {
+    const tenant = await tx.tenant.findFirst({
       where: { id: tenantId },
       select: { plan: { select: { name: true, maxEmployees: true } } },
     });
@@ -506,7 +516,11 @@ export class EmployeesService {
       return;
     }
 
-    const current = await this.prisma.scoped.employee.count();
+    // Igual que en sucursales: la fila del negocio hace de cerrojo para
+    // serializar las altas simultáneas del mismo tenant.
+    await tx.$queryRaw`SELECT id FROM tenants WHERE id = ${tenantId}::uuid FOR UPDATE`;
+
+    const current = await tx.employee.count();
 
     if (current >= maxEmployees) {
       throw new ForbiddenException(

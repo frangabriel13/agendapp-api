@@ -24,6 +24,17 @@ import { softDeleteExtension, tenantScopeExtension } from './extensions';
  *   - Services de negocio (BranchesService, AppointmentsService, etc.) →
  *     `prisma.scoped.<modelo>`
  */
+/**
+ * El cliente que recibe el callback de `prisma.scoped.$transaction`: el mismo
+ * cliente extendido, menos los métodos que adentro de una transacción no se
+ * pueden usar. Sirve para tipar helpers que corren dentro de la transacción sin
+ * caer en `any`.
+ */
+export type ScopedTransactionClient = Omit<
+  PrismaService['scoped'],
+  '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
+>;
+
 @Injectable()
 export class PrismaService
   extends PrismaClient

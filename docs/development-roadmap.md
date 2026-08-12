@@ -39,7 +39,7 @@
 - ✅ `BranchesModule`: CRUD de sucursales con validación de `plan.maxBranches`, horario semanal (`PUT` que reemplaza los 7 días) y días especiales.
 - ✅ Migración `20260812122603_employees`: `EmployeeInvitation`, `EmployeeBranch`, `EmployeeSchedule` y `EmployeeTimeOff`; `Employee` completo y `users.password_hash` ahora nullable.
 - ✅ `EmployeesModule`: invitación con link de activación (sin email todavía), activación pública, permisos, sucursales asignadas, horario semanal con turno partido y ausencias.
-- ✅ Total del repo: **167 tests unitarios + 132 e2e**.
+- ✅ Total del repo: **193 tests unitarios + 134 e2e**.
 - ⏭️ Diferido: el envío del link por email (misma deadline que el resto de los mails, antes de la Fase 7). Hoy el link viaja en la respuesta de `POST /employees`.
 - ❌ Todavía sin RLS (Fase 8) ni catálogo (Fase 3 en adelante).
 
@@ -322,11 +322,12 @@ Reglas:
 
 - **11 endpoints**: CRUD de `/branches`, `GET`/`PUT` de `/branches/:id/business-hours` y CRUD de `/branches/:id/special-days`. Leer alcanza con estar autenticado; escribir es `OWNER` + `ADMINISTRATIVE`.
 - **El primer service que usa `prisma.scoped` de punta a punta.** Ninguna query filtra por `tenantId`: lo pone la extension. El único lugar donde el tenant aparece explícito es la lectura del plan, porque `Tenant` está exento del scoping.
-- **`scopedCreate<T>()`** (en `tenant-scope.extension.ts`) resuelve la fricción con TypeScript: los tipos generados exigen `tenantId` en los `create`, pero mandarlo a mano sería un error (la extension hace `{ tenantId, ...data }`, así que el explícito le ganaría al del contexto). El helper apaga el chequeo de esa sola propiedad en vez de un `as any` que apagaría el de todas.
+- **`scopedCreate<T>()`** (en `tenant-scope.extension.ts`) resuelve la fricción con TypeScript: los tipos generados exigen `tenantId` en los `create`, pero mandarlo a mano no sirve — el contexto lo pisa igual. El helper apaga el chequeo de esa sola propiedad en vez de un `as any` que apagaría el de todas.
+- **La inyección del `tenantId` se endureció**: `applyTenantScope` escribe el del contexto **último** en el spread, así le gana a cualquiera que venga en los args. Antes iba primero, y un `where: { tenantId: 'otro' }` escrito por error lo pisaba: la red de seguridad tenía un agujero en su propia red. Es una función pura y exportada justamente para poder testearla sin levantar Prisma.
 - **El horario semanal se reemplaza entero** (`PUT`, no `PATCH`): borrar e insertar los 7 días en una transacción evita el estado ambiguo de "el martes quedó del set anterior".
 - **`TIME` y `DATE` viajan como `"HH:MM"` y `"YYYY-MM-DD"`.** Prisma los devuelve como `Date` anclados al 1970-01-01 / medianoche UTC; la conversión está en `src/common/utils/time-of-day.util.ts` y `date-only.util.ts`, y sirve igual para servicios (Fase 3) y turnos (Fase 5).
 - **Validación en dos capas**: el service devuelve 400 con un mensaje entendible y los CHECK de Postgres son la red de abajo, para cuando el que escriba sea un job o una query a mano. Los e2e prueban las dos.
-- **Límite del plan**: entre el `count` y el `INSERT` hay una ventana de carrera que el chequeo no cierra. Para el ritmo con que un negocio abre sucursales alcanza; si algún día molesta, se resuelve con un advisory lock.
+- **Límite del plan**: el chequeo corre dentro de la transacción del alta y arranca lockeando la fila del negocio (`SELECT … FOR UPDATE`). Sin eso, dos altas simultáneas contaban las dos lo mismo y entraban las dos — hay un e2e que dispara cinco a la vez y verifica que entre una sola. (Verifiqué que el test falla si se saca el lock: sin él pasan dos.)
 - **Limitación conocida**: `closes_at > opens_at` no admite horarios que crucen la medianoche. No aplica al rubro hoy.
 - **Tests**: 40 e2e (incluido el aislamiento entre negocios en sucursales, horarios y días especiales) + 26 unitarios nuevos.
 
