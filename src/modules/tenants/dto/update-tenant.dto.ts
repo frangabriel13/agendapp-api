@@ -9,9 +9,7 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
-
-const trim = ({ value }: { value: unknown }): unknown =>
-  typeof value === 'string' ? value.trim() : value;
+import { trim } from '../../../common/utils/trim.transform';
 
 const upperTrim = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim().toUpperCase() : value;

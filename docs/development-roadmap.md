@@ -8,7 +8,7 @@
 
 ## 📌 Estado actual del repo
 
-> **Fases 0 y 1 cerradas.** El próximo paso es la Fase 2 (sucursales y empleados).
+> **Fases 0 y 1 cerradas; la 2.1 (sucursales) también.** El próximo paso es la 2.2 (empleados).
 
 **Cimientos (Fase 0)**
 
@@ -32,7 +32,14 @@
 - ✅ `TenantsModule`: `GET/PATCH /tenants/me`, `/tenants/me/branding` y `/tenants/me/settings`.
 - ✅ **45 tests e2e** sobre Postgres real (base dedicada `agendapp_test`), más 42 unitarios.
 - ⏭️ Diferido a propósito: emails transaccionales (reset de contraseña, verificación) — deadline antes de la Fase 7.
-- ❌ Todavía sin RLS (Fase 8) ni dominios de negocio (sucursales en adelante).
+
+**Estructura del negocio (Fase 2)**
+
+- ✅ Migración `20260812112622_branches`: `Branch`, `BranchBusinessHour` y `BranchSpecialDay`, con los CHECK de horario y el índice único parcial de nombre por tenant.
+- ✅ `BranchesModule`: CRUD de sucursales con validación de `plan.maxBranches`, horario semanal (`PUT` que reemplaza los 7 días) y días especiales.
+- ✅ Total del repo: **104 tests unitarios + 85 e2e**.
+- ❌ Falta la 2.2: empleados (`EmployeeBranch`, `EmployeeSchedule`, `EmployeeTimeOff` y el flujo de invitación).
+- ❌ Todavía sin RLS (Fase 8) ni catálogo (Fase 3 en adelante).
 
 ---
 
@@ -291,9 +298,9 @@ exista, a un usuario que olvida la clave hay que cambiársela a mano en la base.
 
 ## 🏬 FASE 2 — Estructura del negocio
 
-### 2.1 Sucursales
+### ✅ 2.1 Sucursales
 
-Migración: `Branch`, `BranchBusinessHours`, `BranchSpecialDay`.
+Migración: `Branch`, `BranchBusinessHour`, `BranchSpecialDay`.
 
 ```bash
 npx prisma migrate dev --name branches
@@ -305,6 +312,18 @@ Reglas:
 - Al crear una `Branch`, validar `tenant.plan.maxBranches` contra el count actual.
 - `BranchBusinessHours`: 7 filas por sucursal (una por día). `is_closed` para días sin atención.
 - Constraint: `CHECK (closes_at > opens_at OR is_closed = true)`.
+
+**Cómo quedó:**
+
+- **11 endpoints**: CRUD de `/branches`, `GET`/`PUT` de `/branches/:id/business-hours` y CRUD de `/branches/:id/special-days`. Leer alcanza con estar autenticado; escribir es `OWNER` + `ADMINISTRATIVE`.
+- **El primer service que usa `prisma.scoped` de punta a punta.** Ninguna query filtra por `tenantId`: lo pone la extension. El único lugar donde el tenant aparece explícito es la lectura del plan, porque `Tenant` está exento del scoping.
+- **`scopedCreate<T>()`** (en `tenant-scope.extension.ts`) resuelve la fricción con TypeScript: los tipos generados exigen `tenantId` en los `create`, pero mandarlo a mano sería un error (la extension hace `{ tenantId, ...data }`, así que el explícito le ganaría al del contexto). El helper apaga el chequeo de esa sola propiedad en vez de un `as any` que apagaría el de todas.
+- **El horario semanal se reemplaza entero** (`PUT`, no `PATCH`): borrar e insertar los 7 días en una transacción evita el estado ambiguo de "el martes quedó del set anterior".
+- **`TIME` y `DATE` viajan como `"HH:MM"` y `"YYYY-MM-DD"`.** Prisma los devuelve como `Date` anclados al 1970-01-01 / medianoche UTC; la conversión está en `src/common/utils/time-of-day.util.ts` y `date-only.util.ts`, y sirve igual para servicios (Fase 3) y turnos (Fase 5).
+- **Validación en dos capas**: el service devuelve 400 con un mensaje entendible y los CHECK de Postgres son la red de abajo, para cuando el que escriba sea un job o una query a mano. Los e2e prueban las dos.
+- **Límite del plan**: entre el `count` y el `INSERT` hay una ventana de carrera que el chequeo no cierra. Para el ritmo con que un negocio abre sucursales alcanza; si algún día molesta, se resuelve con un advisory lock.
+- **Limitación conocida**: `closes_at > opens_at` no admite horarios que crucen la medianoche. No aplica al rubro hoy.
+- **Tests**: 40 e2e (incluido el aislamiento entre negocios en sucursales, horarios y días especiales) + 26 unitarios nuevos.
 
 ### 2.2 Empleados
 
