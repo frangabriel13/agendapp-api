@@ -8,20 +8,31 @@
 
 ## 📌 Estado actual del repo
 
-> **Fase 0 cerrada.** Los cimientos transversales están completos; el próximo paso es la Fase 1.
+> **Fase 0 cerrada. Fase 1 implementada de punta a punta (1.1 → 1.5); falta la suite E2E para darla por cerrada.**
+
+**Cimientos (Fase 0)**
 
 - ✅ NestJS 11 + TypeScript `strict` + Prisma 7 (driver adapter `@prisma/adapter-pg`).
 - ✅ `ConfigModule` con validación Zod (`src/config/env.schema.ts`).
 - ✅ `PrismaService` global con dos clientes: `prisma.<modelo>` (base) y `prisma.scoped.<modelo>` (extendido).
 - ✅ Healthcheck `GET /health` con `PrismaHealthIndicator`.
 - ✅ Docker Compose con Postgres 16 + Adminer.
-- ✅ `TenantContextService` sobre `AsyncLocalStorage` (`run` / `runWithoutTenant`), global.
+- ✅ `TenantContextService` sobre `AsyncLocalStorage`, global.
 - ✅ Extensions de Prisma: soft delete + tenant scope (`src/prisma/extensions/`), con modelos exentos explícitos.
 - ✅ Logger estructurado (nestjs-pino + `requestId`), filtro global de excepciones, Swagger en `/api`, `ValidationPipe` global y `ThrottlerModule` con guard global.
 - ✅ Migración `20260515120000_enable_extensions` (`pgcrypto` para `gen_random_uuid()`, `btree_gist` para la Fase 5).
-- ⚠️ Schema con **0 modelos** de negocio: los dominios reales empiezan en la Fase 1.
-- ⚠️ Hueco consciente: el middleware que llena el tenant-context desde el JWT se implementa en la Fase 1 (1.4/1.5). Hasta entonces, cualquier query sobre `prisma.scoped` fuera de `runWithoutTenant` lanza `TenantContextMissingError`.
-- ❌ Sin auth, sin RLS (Fase 8), sin dominios reales.
+
+**Auth y tenant (Fase 1)**
+
+- ✅ Migración `20260805175327_auth_and_tenant_base`: `User`, `RefreshToken`, `Plan`, `Subscription`, `Tenant`, `TenantBranding`, `TenantSettings` y `Employee` (versión mínima), con los CHECK constraints de la fase y el índice parcial de un solo owner activo por tenant.
+- ✅ Seed idempotente de los 4 planes (`prisma/seed.ts`, comando en `prisma.config.ts`).
+- ✅ `AuthModule`: `register`, `login`, `refresh` (rotación + detección de reuso por familia), `logout`, `me` y `PATCH /auth/password`.
+- ✅ **El tenant-context ya es real**: `TenantContextMiddleware` monta el ALS en cada request y el `JwtAuthGuard` —ahora global— lo resuelve con los datos del token. `prisma.scoped` filtra solo; los services no escriben `tenantId` nunca.
+- ✅ `@Public()` para abrir rutas (`/health` y auth pre-login) y `@Roles()` + `RolesGuard` global para autorizar por rol.
+- ✅ `TenantsModule`: `GET/PATCH /tenants/me`, `/tenants/me/branding` y `/tenants/me/settings`.
+- ⚠️ Falta para cerrar la fase: **tests E2E del flujo completo** (ver 1.6).
+- ⏭️ Diferido a propósito: emails transaccionales (reset de contraseña, verificación) — deadline antes de la Fase 7.
+- ❌ Todavía sin RLS (Fase 8) ni dominios de negocio (sucursales en adelante).
 
 ---
 
@@ -30,7 +41,7 @@
 | Fase | Tema | Objetivo |
 |---|---|---|
 | ✅ 0 | Cimientos transversales | Decisiones base (IDs, soft delete, tenant scoping, logging, swagger) |
-| 1 | Auth + Tenant base | Registro, login, JWT, planes, suscripción |
+| 🟡 1 | Auth + Tenant base | Registro, login, JWT, planes, suscripción — **hecho salvo los E2E** |
 | 2 | Estructura del negocio | Sucursales y empleados |
 | 3 | Catálogo | Servicios, categorías, recursos |
 | 4 | Clientes | Customers + tags |
@@ -45,6 +56,10 @@
 ---
 
 ## 🏗️ FASE 0 — Cimientos transversales
+
+> **Fase cerrada.** Lo que sigue es el plan original tal como se escribió; queda como
+> registro de las decisiones (por eso habla en presente de cosas que ya se resolvieron,
+> como el `Tenant` placeholder con `cuid()` que se eliminó).
 
 > Hacelo **antes** de tocar el primer dominio. Si lo dejás para después, vas a re-escribir 10 services.
 
@@ -81,6 +96,8 @@ Crear `src/common/tenant-context/`:
 - `TenantContextService` que envuelve un `AsyncLocalStorage<{ tenantId: string; userId: string }>`.
 - `TenantContextMiddleware` que extrae `tenantId` del JWT y lo guarda en el ALS.
 - Registrar el middleware globalmente en `AppModule`.
+
+> El middleware quedó para la **Fase 1.4**, cuando ya existía el JWT del cual sacar el tenant. La Fase 0 solo dejó el `TenantContextService`.
 
 ### 0.4 Prisma Client Extension (soft delete + tenant scope)
 
@@ -147,63 +164,95 @@ npm i @nestjs/throttler
 
 ## 🔐 FASE 1 — Auth y Tenant base
 
-### 1.1 Migración: auth + tenant
+### ✅ 1.1 Migración: auth + tenant
 
-Crear modelos Prisma en este orden (sin las FKs circulares aún):
+Modelos creados en la migración `20260805175327_auth_and_tenant_base`: `User`,
+`RefreshToken`, `Plan`, `Tenant`, `Subscription`, `TenantBranding`,
+`TenantSettings` y `Employee`.
 
-1. `User` — sin relación a `Tenant` todavía.
-2. `RefreshToken` — FK a `User`.
-3. `Plan` — sin FKs.
-4. `Tenant` — refactor del actual: agregar `ownerUserId`, `planId`, `slug`, `subscriptionStatus`, `trialEndsAt`, `timezone`, `currency`, `language`.
-5. `Subscription` — FK a `Tenant` y `Plan`.
+**Cómo quedó, vs. lo planeado:**
 
-```bash
-npx prisma migrate dev --name auth_and_tenant_base
-```
+- Se sumaron `TenantBranding` y `TenantSettings` acá (el plan original los dejaba para 1.5): `register` las crea en la misma transacción, así que ningún tenant nace sin configuración.
+- `Employee` entró en **versión mínima** (`tenantId`, `userId`, `role`, `isOwner`, `isActive`) porque el registro necesita crear al owner. `hiredAt`, `bio` y `avatarUrl` van en la Fase 2.
+- El `RefreshToken` **no es un JWT**: es opaco (`<id>.<secret>`), con `familyId` para agrupar la cadena de rotaciones y poder revocar toda la familia ante un reuso.
+- La migración se editó a mano para agregar SQL que Prisma no genera: índice parcial de un solo owner activo por tenant y los CHECK constraints de la fase (período de suscripción coherente, porcentaje de reembolso 0-100, parcial exige porcentaje, ventanas no negativas).
 
-### 1.2 Seeds de planes
+### ✅ 1.2 Seeds de planes
 
-`prisma/seed.ts` con los 4 planes (Básico, Pro, Avanzado, Business). Configurar `package.json`:
+`prisma/seed.ts` con los 4 planes (Básico, Pro, Avanzado, Empresa), idempotente
+por `slug` — es la fuente de verdad del catálogo: cambiás un precio ahí, volvés
+a correrlo y la fila se actualiza.
 
-```json
-"prisma": { "seed": "ts-node prisma/seed.ts" }
-```
+En Prisma 7 el comando **no** va en la clave `prisma` de `package.json` sino en
+`prisma.config.ts` (`migrations.seed`). Correr: `npx prisma db seed`.
 
-Correr: `npx prisma db seed`.
+> Sin este seed, `POST /auth/register` responde 500: no encuentra el plan `basico`.
 
-### 1.3 AuthModule
+### ✅ 1.3 AuthModule
 
-```bash
-npx nest g module modules/auth
-npx nest g service modules/auth
-npx nest g controller modules/auth
-npm i @nestjs/jwt @nestjs/passport passport passport-jwt argon2
-npm i -D @types/passport-jwt
-```
+Endpoints (`src/modules/auth/`):
 
-Endpoints:
+- `POST /auth/register` — crea `User` + `Tenant` + `Employee` (owner) + `Subscription` (trial) + branding + settings **en una transacción**.
+- `POST /auth/login` — devuelve `{ accessToken, refreshToken }`.
+- `POST /auth/refresh` — rotación: revoca el viejo, emite uno nuevo con el mismo `familyId`.
+- `POST /auth/logout` — revoca el refresh token y toda su cadena. Es `@Public()` a propósito: alcanza con el refresh token, así se puede cerrar sesión con el access token ya vencido.
+- `GET /auth/me` — user + tenant + employee.
+- `PATCH /auth/password` — extra, no estaba en el plan: cambia la contraseña y cierra todas las sesiones abiertas.
 
-- `POST /auth/register` — crea `User` + `Tenant` + `Employee` (owner) + `Subscription` (trial) **en una transacción** (`prisma.$transaction`).
-- `POST /auth/login` — devuelve `{ accessToken, refreshToken }`. Refresh hash con argon2 en `refresh_tokens`.
-- `POST /auth/refresh` — rotación de refresh token (revoca el viejo, emite uno nuevo).
-- `POST /auth/logout` — revoca el refresh token actual.
-- `GET /auth/me` — devuelve user + tenant + role.
+Detalle importante: `JwtStrategy.validate` **relee al empleado de la base en cada
+request** en vez de confiar en el contenido del token. Si lo desactivan o le
+cambian el rol, pierde el acceso en el acto y no cuando expire el token.
 
-### 1.4 Guard global
+### ✅ 1.4 Guard global + tenant-context real
 
-`JwtAuthGuard` aplicado con `APP_GUARD` en `AppModule`. Decorator `@Public()` para opt-out (lo van a usar Fase 7 y `/health`).
+Tres piezas, en este orden dentro del request:
 
-El payload del JWT debe incluir: `userId`, `tenantId`, `employeeId`, `role`. El middleware de Fase 0.3 los empuja al ALS.
+1. **`TenantContextMiddleware`** (`src/common/tenant-context/`) monta el `AsyncLocalStorage` llamando a `next()` dentro de `als.run(...)`, así todo lo que viene después (guards, interceptors, handler, filtros) queda en el mismo contexto asincrónico. Registrado en `AppModule.configure()` con `forRoutes({ path: '{*path}', method: RequestMethod.ALL })` — la sintaxis de wildcard de Express 5; el viejo `'*'` funciona pero avisa que está deprecado.
+2. **`JwtAuthGuard`** global (`APP_GUARD`): autentica y, apenas passport valida el token, empuja `tenantId`/`userId`/`employeeId`/`role` al store con `tenantContext.set(...)`. `@Public()` (`src/common/decorators/`) abre las rutas que quedan afuera.
+3. **`RolesGuard`** global + `@Roles(...)`: autorización por rol. No estaba en el plan original, pero sin esto cualquier `PROFESSIONAL` podía editar la configuración del negocio. No hace nada si el handler no declara roles.
 
-### 1.5 TenantsModule
+**Por qué middleware y no interceptor:** cuando corre el middleware todavía no
+pasaron los guards, así que no hay `request.user`. Por eso el store nace **vacío**
+y el guard lo completa mutando el mismo objeto (`mount()` + `set()`). Eso sumó un
+valor posible más para `store.tenant`, que ahora tiene tres:
 
-```bash
-npx nest g resource modules/tenants
-```
+| `store.tenant` | Significa | Qué hace la extension |
+|---|---|---|
+| `TenantContext` | request autenticado | inyecta `tenantId` |
+| `null` | `runWithoutTenant()` | passthrough |
+| `undefined` | montado pero sin resolver (ruta pública o sin auth) | **lanza** `TenantContextMissingError` |
+| — (`getStore()` es `undefined`) | ALS nunca montado: fuera de un request | **lanza** `TenantContextMissingError` |
 
-- `GET /tenants/me` — info del tenant del usuario logueado.
-- `PATCH /tenants/me` — editar `businessName`, `timezone`, etc.
-- `tenant_branding` y `tenant_settings` como sub-recursos: `GET/PATCH /tenants/me/branding`, `GET/PATCH /tenants/me/settings`.
+Nunca se degrada a "query sin filtro": si el contexto no se resolvió, la query
+falla.
+
+### ✅ 1.5 TenantsModule
+
+`src/modules/tenants/` — `GET/PATCH /tenants/me`, `/tenants/me/branding` y
+`/tenants/me/settings`. Lectura para cualquier empleado; edición restringida a
+`OWNER` y `ADMINISTRATIVE` con `@Roles()`.
+
+Decisiones que conviene recordar:
+
+- **El `slug` no se edita acá.** Es la URL pública del portal (Fase 7) y cambiarlo rompe links ya compartidos. Cuando haga falta, endpoint propio que valide reservados/duplicados y —idealmente— deje un redirect del slug viejo.
+- **Nullables del branding:** ausente = no tocar, `null` explícito = borrar.
+- **Los updates de branding/settings usan `updateMany` sin `where`**, dejando que la extension inyecte el `tenantId` (antipatrón #1). `Tenant` sí se filtra por `id` a mano porque está en `TENANT_EXEMPT_MODELS`.
+- La regla "reembolso parcial exige porcentaje" se valida en el service (400 con mensaje claro) **y** en la base con un CHECK.
+
+### 1.6 Tests E2E del flujo completo — **pendiente**
+
+Lo único que falta para cerrar la fase:
+
+- Registro → token → `/auth/me` → `PATCH /tenants/me`.
+- Rotación de refresh y detección de reuso (un token revocado tumba la familia).
+- Aislamiento entre tenants: con el token de A no se ven datos de B.
+- Rutas públicas vs. protegidas (401) y autorización por rol (403).
+
+Antes de escribirlos, mover `ValidationPipe` y `AllExceptionsFilter` de `main.ts`
+a `APP_PIPE`/`APP_FILTER` en `AppModule`: hoy viven en el bootstrap, así que una
+app levantada con `createNestApplication()` en los tests **no los tiene** y se
+comporta distinto que en producción. Decidir también si los E2E corren contra
+una DB dedicada (ver Fase 9.1).
 
 **✅ Done cuando:** podés registrarte, recibir un token, llamar a `/auth/me` y ver tu tenant. Tests E2E del flujo completo.
 
@@ -630,5 +679,5 @@ Si querés mostrar progreso a alguien (socio, cliente piloto), estos son los hit
 
 ---
 
-> Última actualización: 2026-05-15.
+> Última actualización: 2026-08-12 (cierre de 1.1 → 1.5; queda 1.6).
 > Cuando completes una fase, marcala con ✅ acá arriba y actualizá `database-reference.md` si cambió algo del modelo.

@@ -14,6 +14,11 @@ Backend del SaaS multi-tenant de gestión de turnos para dueños de negocios (pe
 | Base de datos | PostgreSQL 16 (en Docker) |
 | ORM | Prisma 7 con driver adapter (`@prisma/adapter-pg` + `pg`) |
 | Validación de envs | `@nestjs/config` + Zod |
+| Validación de requests | `class-validator` + `ValidationPipe` global |
+| Auth | JWT (`@nestjs/jwt` + `passport-jwt`) + argon2, refresh token opaco con rotación |
+| Logs | `nestjs-pino` (JSON estructurado + `requestId`) |
+| Docs de la API | Swagger / OpenAPI en `/api` |
+| Rate limiting | `@nestjs/throttler` |
 | Health checks | `@nestjs/terminus` |
 | GUI de DB | Adminer (en Docker) |
 
@@ -87,7 +92,20 @@ Esto:
 
 > Si es la primera vez que corre, te va a pedir confirmar el nombre de la migración a aplicar. Solo presioná Enter.
 
-### 6. Levantar el servidor en modo dev
+> ⚠️ `prisma migrate dev` **no** regenera el cliente en este setup (Prisma 7 + driver adapters): aplica el SQL y listo. Después de cada migración corré también `npx prisma generate`, o los modelos nuevos no existen en los tipos de TypeScript.
+
+### 6. Cargar el catálogo de planes (seed)
+
+```bash
+npx prisma db seed
+```
+
+Inserta los 4 planes (Básico, Pro, Avanzado, Empresa). Es **idempotente**: podés
+correrlo las veces que quieras y actualiza las filas por `slug`.
+
+> Sin este paso, `POST /auth/register` devuelve 500: todo negocio nuevo arranca en el plan `basico` y no lo va a encontrar.
+
+### 7. Levantar el servidor en modo dev
 
 ```bash
 npm run start:dev
@@ -95,7 +113,7 @@ npm run start:dev
 
 El server escucha en **`http://localhost:3001`** con hot reload.
 
-### 7. Verificar que todo anda
+### 8. Verificar que todo anda
 
 En otra terminal:
 
@@ -111,6 +129,20 @@ Tenés que ver:
 
 Si te devuelve 200 con `database: up`, el setup está completo ✅
 
+Para probar el flujo real de punta a punta, registrá un negocio y pedí tus datos
+con el token que te devuelve:
+
+```bash
+curl -X POST http://localhost:3001/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"ana@test.com","password":"Password123!","firstName":"Ana","lastName":"Gómez","businessName":"Peluquería Ana"}'
+
+curl http://localhost:3001/auth/me -H "Authorization: Bearer <accessToken>"
+```
+
+O directamente desde Swagger en `http://localhost:3001/api` (botón **Authorize**
+para pegar el token).
+
 ---
 
 ## Estructura del proyecto
@@ -119,17 +151,26 @@ Si te devuelve 200 con `database: up`, el setup está completo ✅
 agendapp-api/
 ├── docker-compose.yml          # Postgres + Adminer
 ├── prisma/
-│   ├── schema.prisma           # modelos de la DB (Tenant, ...)
+│   ├── schema.prisma           # modelos de la DB (User, Tenant, Plan, Employee, ...)
+│   ├── seed.ts                 # catálogo de planes
 │   └── migrations/             # SQL versionado
-├── prisma.config.ts            # config de Prisma 7 (DATABASE_URL vive acá)
+├── prisma.config.ts            # config de Prisma 7 (DATABASE_URL y seed viven acá)
 ├── src/
 │   ├── main.ts                 # entry point
-│   ├── app.module.ts           # root module — registra los demás
+│   ├── app.module.ts           # root module — middleware + guards globales
 │   ├── config/                 # Zod schema + validación de envs
-│   ├── common/                 # decorators / guards / filters compartidos
-│   ├── prisma/                 # PrismaService + PrismaModule (global)
+│   ├── common/                 # transversales compartidos
+│   │   ├── decorators/         # @Public(), @Roles()
+│   │   ├── errors/             # errores propios del dominio técnico
+│   │   ├── filters/            # AllExceptionsFilter
+│   │   ├── guards/             # RolesGuard
+│   │   ├── tenant-context/     # AsyncLocalStorage + middleware
+│   │   └── utils/              # slugify, etc.
+│   ├── prisma/                 # PrismaService + extensions (soft-delete, tenant-scope)
 │   └── modules/                # ⭐ feature modules (dominio)
-│       └── health/             # GET /health
+│       ├── health/             # GET /health
+│       ├── auth/               # registro, login, refresh, me
+│       └── tenants/            # GET/PATCH /tenants/me (+ branding, settings)
 ├── test/                       # tests e2e
 └── .env                        # variables locales (no comiteado)
 ```
@@ -207,6 +248,7 @@ npx nest g resource modules/users
 | URL | Para qué |
 |---|---|
 | `http://localhost:3001` | API |
+| `http://localhost:3001/api` | Swagger (documentación interactiva) |
 | `http://localhost:3001/health` | Health check |
 | `http://localhost:8080` | Adminer (GUI Postgres) — login: `postgres` / `agendapp` / `agendapp_dev_password` / `agendapp` |
 | `http://localhost:5555` | Prisma Studio (cuando corrés `npx prisma studio`) |
@@ -219,24 +261,32 @@ npx nest g resource modules/users
 
 Ejemplo: agregar el módulo `services` (servicios que ofrece cada negocio).
 
-1. **Modelar en Prisma:**
+1. **Buscar la tabla en [`docs/database-reference.md`](docs/database-reference.md)** y traducirla a Prisma respetando las convenciones del proyecto: UUID generado por Postgres, plata en cents (`Int`, nunca `Decimal`), fechas `@db.Timestamptz`, `@map`/`@@map` a snake_case, y `tenantId` + `deletedAt` en toda tabla de negocio.
+
    ```prisma
    // prisma/schema.prisma
    model Service {
-     id        String   @id @default(cuid())
-     tenantId  String
-     name      String
-     duration  Int      // minutos
-     price     Decimal  @db.Decimal(10, 2)
-     createdAt DateTime @default(now())
-     tenant    Tenant   @relation(fields: [tenantId], references: [id])
+     id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+     tenantId        String    @map("tenant_id") @db.Uuid
+     name            String    @db.VarChar(120)
+     durationMinutes Int       @map("duration_minutes")
+     priceCents      Int       @map("price_cents")
+     createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+     updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+     deletedAt       DateTime? @map("deleted_at") @db.Timestamptz
+
+     tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+     @@index([tenantId])
+     @@map("services")
    }
    ```
 
-2. **Crear migración:**
+2. **Crear migración y regenerar el cliente:**
    ```bash
-   npx prisma migrate dev --name add_service
+   npx prisma migrate dev --name services && npx prisma generate
    ```
+   `migrate dev` solo aplica el SQL: si no corrés `generate`, los tipos nuevos no existen.
 
 3. **Generar el módulo Nest:**
    ```bash
@@ -244,7 +294,9 @@ Ejemplo: agregar el módulo `services` (servicios que ofrece cada negocio).
    ```
    Te pregunta qué tipo (REST API), y si querés CRUD endpoints — decí que sí.
 
-4. **Inyectar `PrismaService`** en el `ServicesService` y usar `this.prisma.service.findMany(...)` etc. Como `PrismaModule` es global (`@Global()`), **no** tenés que importarlo en `ServicesModule`.
+4. **Inyectar `PrismaService`** en el `ServicesService` y usar **`this.prisma.scoped.service.findMany(...)`**. El `.scoped` es lo importante: filtra por tenant y esconde los borrados solo. Como `PrismaModule` es global (`@Global()`), **no** tenés que importarlo en `ServicesModule`.
+
+5. **Registrar el módulo en `AppModule`.** Los endpoints ya nacen protegidos por el guard global; agregá `@Roles(...)` a los que solo deberían poder tocar el dueño o administración.
 
 ---
 
@@ -288,14 +340,24 @@ npm run start:dev
 
 ---
 
-## Cosas que vienen (roadmap corto)
+## Estado del proyecto
 
-- Modelado de dominio completo (`User`, `Appointment`, `Service`, `BusinessHours`)
-- Multi-tenancy con discriminator column + Prisma extension automática
-- Auth con JWT + argon2
-- Swagger / OpenAPI en `/api`
-- Logger estructurado (`nestjs-pino`)
-- BullMQ + Redis para jobs (recordatorios de turnos)
+El plan completo está en [`docs/development-roadmap.md`](docs/development-roadmap.md).
+Resumen a hoy:
+
+**Listo**
+
+- Cimientos transversales: multi-tenancy con `AsyncLocalStorage` + extensions de Prisma (tenant-scope y soft-delete), logs estructurados, filtro global de errores, Swagger, validación y rate limiting.
+- Auth completo: registro de negocio, login, refresh con rotación y detección de reuso, logout, `/auth/me`, cambio de contraseña.
+- Guard de JWT global (`@Public()` para abrir rutas) y autorización por rol (`@Roles()`).
+- Configuración del negocio: `GET/PATCH /tenants/me`, `/branding` y `/settings`.
+
+**Lo que sigue**
+
+- Tests E2E del flujo completo (cierre de la Fase 1).
+- Fase 2: sucursales y empleados. Fase 3: catálogo de servicios. Fase 4: clientes.
+- Fase 5: turnos y disponibilidad (el corazón). Fase 6: pagos con Mercado Pago.
+- Fase 7: portal público de reservas. Fase 8: auditoría, RLS y jobs con BullMQ.
 
 ---
 

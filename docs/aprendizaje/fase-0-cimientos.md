@@ -8,6 +8,7 @@
 > - [`../development-roadmap.md`](../development-roadmap.md) — el plan fase por fase.
 > - [`../database-reference.md`](../database-reference.md) — el modelo de datos.
 > - [`herramientas.md`](./herramientas.md) — qué hace cada librería del stack.
+> - [`fase-1-auth-y-tenant.md`](./fase-1-auth-y-tenant.md) — la fase siguiente, donde estos cimientos se usan de verdad.
 
 ---
 
@@ -18,12 +19,16 @@ La Fase 0 dejó montada **toda la infraestructura transversal** que se usa en ca
 soft-delete, manejo de errores, logs, validación, documentación y rate-limiting ya funcionan,
 pero **todavía no hay dominios ni auth que los usen**.
 
-**Estado real del repo hoy:**
+**Cómo estaba el repo al cerrar la Fase 0:**
 - ✅ Toda la infra transversal (los 9 puntos de abajo).
 - ✅ Única migración aplicada: `enable_extensions` (pgcrypto + btree_gist).
-- ❌ Schema con **0 modelos** de negocio → eso empieza en Fase 1.
-- ⚠️ Hueco consciente: el middleware que llena el tenant-context desde el JWT se hace en Fase 1
-  (todavía no hay login).
+- ❌ Schema con **0 modelos** de negocio → eso empezó en Fase 1.
+- ⚠️ Hueco consciente: el middleware que llena el tenant-context desde el JWT quedó para la
+  Fase 1 (todavía no había login).
+
+> **Actualización:** la Fase 1 ya está construida — hay modelos, auth y el middleware del
+> tenant-context andando. Este archivo queda como la explicación de los cimientos; lo que
+> vino después está en [`fase-1-auth-y-tenant.md`](./fase-1-auth-y-tenant.md).
 
 ---
 
@@ -148,7 +153,7 @@ Estructura de cada uno: **Qué es** · **Por qué lo necesito** · **En mi códi
 
 ## 🔗 Cómo encajan todos (el recorrido de un request)
 
-Cuando en Fase 1+ llegue un request real:
+Así viaja hoy un request autenticado (la Fase 1 completó el paso del JWT):
 
 ```
 Config validada (9) arrancó la app
