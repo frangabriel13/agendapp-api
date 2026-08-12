@@ -193,8 +193,13 @@ npm run format             # Prettier sobre src/ y test/
 npm run test               # tests unitarios (Jest)
 npm run test:watch         # Jest en watch mode
 npm run test:cov           # tests con coverage
-npm run test:e2e           # tests e2e
+npm run test:e2e           # tests e2e contra Postgres real
 ```
+
+> Los **e2e** necesitan el Docker levantado, pero no tocan tu base de desarrollo:
+> se crean sola una base `agendapp_test` en el mismo Postgres, le aplican las
+> migraciones y el seed, y truncan las tablas entre tests. Si querés apuntarlos a
+> otra base (por ejemplo en CI), definí `E2E_DATABASE_URL`.
 
 ### Docker (Postgres + Adminer)
 
@@ -352,9 +357,11 @@ Resumen a hoy:
 - Guard de JWT global (`@Public()` para abrir rutas) y autorización por rol (`@Roles()`).
 - Configuración del negocio: `GET/PATCH /tenants/me`, `/branding` y `/settings`.
 
+- Suite de tests: 42 unitarios + 45 e2e contra Postgres real (flujo completo de
+  registro a edición del negocio, rotación de tokens y aislamiento entre negocios).
+
 **Lo que sigue**
 
-- Tests E2E del flujo completo (cierre de la Fase 1).
 - Fase 2: sucursales y empleados. Fase 3: catálogo de servicios. Fase 4: clientes.
 - Fase 5: turnos y disponibilidad (el corazón). Fase 6: pagos con Mercado Pago.
 - Fase 7: portal público de reservas. Fase 8: auditoría, RLS y jobs con BullMQ.

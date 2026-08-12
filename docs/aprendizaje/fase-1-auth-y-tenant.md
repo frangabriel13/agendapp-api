@@ -27,7 +27,7 @@ había quedado (el middleware que llena la "mochila" del tenant) y recién ahí
 - ✅ Registro, login, refresh, logout, `/auth/me`, cambio de contraseña.
 - ✅ Guard de JWT global + `@Public()` + autorización por rol.
 - ✅ Endpoints de configuración del negocio (`/tenants/me` y sus dos sub-recursos).
-- ⚠️ Falta la suite E2E para dar la fase por cerrada.
+- ✅ 45 tests e2e contra Postgres real + 42 unitarios.
 - ⏭️ Diferido a propósito: emails (reset de contraseña, verificación) — antes de la Fase 7.
 
 ---
@@ -181,7 +181,44 @@ request
   (`pickDefined` en `tenants.service.ts`).
 - **Concepto clave.** En un PATCH, la ausencia de un campo **es** información.
 
-### 10. El slug no se edita (todavía)
+### 10. Los tests e2e prueban la app, no una imitación
+
+- **Qué es.** Los e2e levantan la aplicación entera —mismos guards, mismo
+  `ValidationPipe`, mismo filtro de errores— y le pegan por HTTP con supertest,
+  contra un Postgres de verdad.
+- **Por qué contra una base real.** Los mocks de Prisma prueban que mi código
+  llama bien a Prisma; no prueban que la base haga lo que espero. Los CHECK
+  constraints, el índice de owner único y —sobre todo— el filtro por tenant que
+  inyecta la extension solo se ven contra Postgres.
+- **La base de tests es aparte** (`agendapp_test`): se crea, migra y siembra sola
+  antes de la corrida, y los tests truncan las tablas entre casos. Así puedo
+  borrar todo sin perder los datos con los que vengo probando a mano en dev.
+- **Un cambio que hubo que hacer primero:** el `ValidationPipe` y el filtro de
+  excepciones estaban en `main.ts`, que los tests no ejecutan. Pasaron a ser
+  providers (`APP_PIPE` / `APP_FILTER`) en `AppModule`, así la app de test es la
+  misma que la de producción y no una parecida.
+- **Concepto clave.** Un test e2e que corre sobre una app distinta a la real
+  prueba otra cosa. Si el bootstrap configura algo, los tests no lo tienen.
+
+### 11. Las PrismaPromise son perezosas (esto me lo enseñó un test que fallaba)
+
+- **Qué pasó.** Escribí `ctx.runWithoutTenant(() => prisma.scoped.tenantSettings.findMany())`
+  y explotó con `TenantContextMissingError`, justo dentro del escape hatch que
+  debería evitarlo.
+- **Por qué.** Una `PrismaPromise` **no ejecuta nada al crearse**: la query
+  arranca cuando alguien llama a su `.then()`. Como el callback devolvía la
+  promesa sin esperarla, `runWithoutTenant` terminaba, se desmontaba el
+  `AsyncLocalStorage`, y recién ahí Jest hacía el `await` → la query corría sin
+  contexto.
+- **La forma correcta.** `async () => await prisma.scoped.tenantSettings.findMany()`:
+  el `await` dispara la query **adentro** del contexto.
+- **Dónde importa.** Solo en código que monta el contexto a mano (jobs, seeds,
+  webhooks de las fases 6 y 8). En un request HTTP normal el middleware envuelve
+  todo el ciclo, así que no hay forma de escaparse.
+- **Concepto clave.** "Lazy" no es un detalle de performance: cambia *cuándo*
+  corre el código, y con `AsyncLocalStorage` el cuándo define el contexto.
+
+### 12. El slug no se edita (todavía)
 
 - **Qué es.** El `slug` (`peluqueria-ana`) se genera del nombre al registrarse y no está
   entre los campos editables.
@@ -222,14 +259,18 @@ request
 7. ¿Cuál es la diferencia entre el `JwtAuthGuard` y el `RolesGuard`?
 8. ¿Por qué conviene que los endpoints nazcan protegidos y se abran de a uno?
 9. En un PATCH, ¿qué diferencia hay entre no mandar `logoUrl` y mandarlo en `null`?
-10. ¿Por qué el `slug` no se puede editar por ahora?
+10. ¿Por qué los e2e corren contra una base real y no contra Prisma mockeado?
+11. ¿Por qué `runWithoutTenant(() => prisma.scoped.x.findMany())` falla y con `await` no?
+12. ¿Por qué el `slug` no se puede editar por ahora?
 
 ---
 
-## ⏭️ Lo que falta para cerrar la fase
+## ✅ Fase cerrada
 
-- **Tests E2E del flujo completo**: registro → token → `/auth/me` → editar el negocio;
-  rotación de refresh; aislamiento entre dos tenants; 401 y 403.
-- Antes de escribirlos: mover `ValidationPipe` y `AllExceptionsFilter` de `main.ts` a
-  `APP_PIPE`/`APP_FILTER`, porque hoy la app que se levanta en los tests **no los tiene** y
-  se comporta distinto que en producción.
+Los e2e cubren el flujo completo (registro → token → `/auth/me` → editar el negocio),
+la rotación de refresh con detección de reuso, el corte de acceso al desactivar un
+empleado, el aislamiento entre dos negocios y la red de seguridad del tenant-scope.
+
+Lo próximo es la **Fase 2: sucursales y empleados**, que es la primera vez que voy a
+escribir un service de negocio usando `prisma.scoped` desde cero — sin acordarme del
+`tenantId` en ninguna query.

@@ -1,27 +1,20 @@
-import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
-import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import type { Env } from './config/env.schema';
 
+/**
+ * El `ValidationPipe` y el `AllExceptionsFilter` NO se registran acá sino como
+ * providers (`APP_PIPE` / `APP_FILTER`) en `AppModule`: así los tests e2e, que
+ * levantan la app con `createNestApplication()` sin pasar por este bootstrap,
+ * corren con exactamente el mismo comportamiento que producción.
+ */
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
 
   app.useLogger(app.get(Logger));
-
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-      transformOptions: { enableImplicitConversion: true },
-    }),
-  );
-
-  app.useGlobalFilters(new AllExceptionsFilter());
 
   const swaggerConfig = new DocumentBuilder()
     .setTitle('AgendApp API')
