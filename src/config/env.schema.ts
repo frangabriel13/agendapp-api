@@ -24,6 +24,23 @@ export const envSchema = z.object({
   JWT_ACCESS_EXPIRES_IN: z.string().min(1).default('15m'),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(7),
 
+  /**
+   * Orígenes que pueden llamar a la API desde un navegador, separados por coma.
+   *
+   * El browser bloquea por defecto que una página de un origen llame a otro
+   * (CORS). El default apunta al Next de desarrollo. En producción va el dominio
+   * real; nunca `*`, porque anularía la protección.
+   */
+  CORS_ORIGINS: z
+    .string()
+    .default('http://localhost:3000')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean),
+    ),
+
   // --- Negocio ------------------------------------------------------------
   /** Días de prueba que recibe un tenant nuevo al registrarse. */
   TRIAL_DAYS: z.coerce.number().int().positive().default(14),

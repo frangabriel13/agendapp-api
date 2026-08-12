@@ -24,6 +24,7 @@ import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
 import { HealthModule } from './modules/health/health.module';
 import { TenantsModule } from './modules/tenants/tenants.module';
 import { validateEnv } from './config/env.validation';
+import { THROTTLERS } from './config/throttler.config';
 import type { Env } from './config/env.schema';
 
 @Module({
@@ -59,10 +60,9 @@ import type { Env } from './config/env.schema';
         };
       },
     }),
-    ThrottlerModule.forRoot([
-      { name: 'short', ttl: 1_000, limit: 10 },
-      { name: 'long', ttl: 60_000, limit: 100 },
-    ]),
+    // La lista vive en su propio archivo porque `main.ts` la necesita para
+    // saber qué headers de rate limit exponer por CORS.
+    ThrottlerModule.forRoot(THROTTLERS),
     TenantContextModule,
     PrismaModule,
     AuthModule,
