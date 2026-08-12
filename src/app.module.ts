@@ -2,17 +2,19 @@ import { randomUUID } from 'node:crypto';
 import {
   Module,
   RequestMethod,
+  ValidationPipe,
   type MiddlewareConsumer,
   type NestModule,
 } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_PIPE } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import {
   TenantContextMiddleware,
   TenantContextModule,
 } from './common/tenant-context';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { RolesGuard } from './common/guards/roles.guard';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -36,7 +38,8 @@ import type { Env } from './config/env.schema';
         const isProd = env === 'production';
         return {
           pinoHttp: {
-            level: isProd ? 'info' : 'debug',
+            // En test se silencia: si no, cada request de los e2e escupe un log.
+            level: isProd ? 'info' : env === 'test' ? 'silent' : 'debug',
             transport: isProd
               ? undefined
               : {
@@ -66,6 +69,18 @@ import type { Env } from './config/env.schema';
   ],
   controllers: [],
   providers: [
+    // Pipe y filtro globales como providers (no en main.ts) para que los tests
+    // e2e levanten la app con el mismo comportamiento que producción.
+    {
+      provide: APP_PIPE,
+      useValue: new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+        transformOptions: { enableImplicitConversion: true },
+      }),
+    },
+    { provide: APP_FILTER, useClass: AllExceptionsFilter },
     // El orden importa: primero se corta por rate limit, después se autentica.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     // Guard global: todo endpoint nace protegido; se abre con `@Public()`.

@@ -8,7 +8,7 @@
 
 ## 📌 Estado actual del repo
 
-> **Fase 0 cerrada. Fase 1 implementada de punta a punta (1.1 → 1.5); falta la suite E2E para darla por cerrada.**
+> **Fases 0 y 1 cerradas.** El próximo paso es la Fase 2 (sucursales y empleados).
 
 **Cimientos (Fase 0)**
 
@@ -30,7 +30,7 @@
 - ✅ **El tenant-context ya es real**: `TenantContextMiddleware` monta el ALS en cada request y el `JwtAuthGuard` —ahora global— lo resuelve con los datos del token. `prisma.scoped` filtra solo; los services no escriben `tenantId` nunca.
 - ✅ `@Public()` para abrir rutas (`/health` y auth pre-login) y `@Roles()` + `RolesGuard` global para autorizar por rol.
 - ✅ `TenantsModule`: `GET/PATCH /tenants/me`, `/tenants/me/branding` y `/tenants/me/settings`.
-- ⚠️ Falta para cerrar la fase: **tests E2E del flujo completo** (ver 1.6).
+- ✅ **45 tests e2e** sobre Postgres real (base dedicada `agendapp_test`), más 42 unitarios.
 - ⏭️ Diferido a propósito: emails transaccionales (reset de contraseña, verificación) — deadline antes de la Fase 7.
 - ❌ Todavía sin RLS (Fase 8) ni dominios de negocio (sucursales en adelante).
 
@@ -41,7 +41,7 @@
 | Fase | Tema | Objetivo |
 |---|---|---|
 | ✅ 0 | Cimientos transversales | Decisiones base (IDs, soft delete, tenant scoping, logging, swagger) |
-| 🟡 1 | Auth + Tenant base | Registro, login, JWT, planes, suscripción — **hecho salvo los E2E** |
+| ✅ 1 | Auth + Tenant base | Registro, login, JWT, planes, suscripción |
 | 2 | Estructura del negocio | Sucursales y empleados |
 | 3 | Catálogo | Servicios, categorías, recursos |
 | 4 | Clientes | Customers + tags |
@@ -239,20 +239,37 @@ Decisiones que conviene recordar:
 - **Los updates de branding/settings usan `updateMany` sin `where`**, dejando que la extension inyecte el `tenantId` (antipatrón #1). `Tenant` sí se filtra por `id` a mano porque está en `TENANT_EXEMPT_MODELS`.
 - La regla "reembolso parcial exige porcentaje" se valida en el service (400 con mensaje claro) **y** en la base con un CHECK.
 
-### 1.6 Tests E2E del flujo completo — **pendiente**
+### ✅ 1.6 Tests E2E del flujo completo
 
-Lo único que falta para cerrar la fase:
+45 tests en `test/auth.e2e-spec.ts` y `test/tenants.e2e-spec.ts`, corriendo
+contra Postgres de verdad.
 
-- Registro → token → `/auth/me` → `PATCH /tenants/me`.
-- Rotación de refresh y detección de reuso (un token revocado tumba la familia).
-- Aislamiento entre tenants: con el token de A no se ven datos de B.
-- Rutas públicas vs. protegidas (401) y autorización por rol (403).
+**Infraestructura** (reusable de acá en adelante):
 
-Antes de escribirlos, mover `ValidationPipe` y `AllExceptionsFilter` de `main.ts`
-a `APP_PIPE`/`APP_FILTER` en `AppModule`: hoy viven en el bootstrap, así que una
-app levantada con `createNestApplication()` en los tests **no los tiene** y se
-comporta distinto que en producción. Decidir también si los E2E corren contra
-una DB dedicada (ver Fase 9.1).
+- **Base dedicada `agendapp_test`**, hermana de la de desarrollo en el mismo Postgres. `test/global-setup.ts` la crea si no existe, corre `prisma migrate deploy` y el seed de planes. Se puede apuntar a otra con `E2E_DATABASE_URL` (CI). Los tests truncan todo entre casos menos `plans`, descubriendo las tablas solas — no hay lista que mantener.
+- `test/utils/e2e-app.ts` levanta la app **con los mismos guards, pipe y filtro que producción** y expone `registerTenant()` para armar un negocio en una línea.
+- Lo único que se desactiva es el rate limiting (el límite real de 5/min haría fallar los tests por ruido, no por bugs). Probar el throttler queda para la Fase 9.
+- `maxWorkers: 1` en `test/jest-e2e.json`: los archivos comparten la base.
+
+**Qué cubren:** el flujo completo de registro a edición del negocio; rotación de
+refresh y detección de reuso (el token revocado tumba la familia entera);
+revocación de sesiones al cambiar la contraseña; corte de acceso inmediato al
+desactivar un empleado; validaciones y campos de contrabando; 401/403/409;
+**aislamiento entre dos negocios** en los tres recursos; y la red de seguridad
+del tenant-scope (una query scopeada sin contexto falla en vez de devolver todo).
+
+**Cambio que habilitó esto:** `ValidationPipe` y `AllExceptionsFilter` pasaron de
+`main.ts` a providers `APP_PIPE` / `APP_FILTER` en `AppModule`. Antes vivían en
+el bootstrap, así que la app de los tests no los tenía y se comportaba distinto
+que la real.
+
+> **Aprendizaje que salió de escribir estos tests:** las `PrismaPromise` son
+> **perezosas** — la query recién se ejecuta cuando alguien llama a su `.then()`.
+> Entonces `ctx.runWithoutTenant(() => prisma.scoped.x.findMany())` **falla**: el
+> callback devuelve la promesa sin esperarla y la query arranca con el contexto
+> ya desmontado. En jobs, seeds y webhooks hay que usar
+> `async () => await prisma.scoped.x.findMany()`. Está documentado en el JSDoc de
+> `run()` / `runWithoutTenant()` y hay un test que lo fija.
 
 **✅ Done cuando:** podés registrarte, recibir un token, llamar a `/auth/me` y ver tu tenant. Tests E2E del flujo completo.
 
@@ -598,12 +615,17 @@ Colas iniciales:
 
 ### 9.1 Tests E2E sobre DB real
 
-`test/` con setup que levanta un Postgres dedicado (o usa schemas separados). Flujos críticos:
+> La infraestructura ya existe desde la Fase 1.6 (base dedicada `agendapp_test`,
+> `global-setup` que migra y siembra, helpers en `test/utils/`). Acá se suman los
+> flujos que dependen de los dominios de las fases 2 a 7.
+
+Flujos críticos que faltan:
 
 - Registro → primer turno → pago de seña → atención.
 - Doble-booking concurrente (debe fallar uno).
-- Aislamiento entre tenants (intentar leer/escribir cross-tenant debe dar 404/403).
 - Cancelación con/sin reembolso según política.
+- Aislamiento entre tenants sobre los dominios nuevos (el de auth/tenant ya está cubierto).
+- Rate limiting: los e2e actuales lo desactivan, así que hay que probarlo aparte.
 
 ### 9.2 Carga
 
@@ -679,5 +701,5 @@ Si querés mostrar progreso a alguien (socio, cliente piloto), estos son los hit
 
 ---
 
-> Última actualización: 2026-08-12 (cierre de 1.1 → 1.5; queda 1.6).
+> Última actualización: 2026-08-12 (Fase 1 cerrada, e2e incluidos).
 > Cuando completes una fase, marcala con ✅ acá arriba y actualizá `database-reference.md` si cambió algo del modelo.

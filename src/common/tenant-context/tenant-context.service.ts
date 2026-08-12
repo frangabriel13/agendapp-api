@@ -27,12 +27,31 @@ export interface TenantContextStore {
 export class TenantContextService {
   private readonly als = new AsyncLocalStorage<TenantContextStore>();
 
+  /**
+   * Corre `fn` con un tenant montado. Para jobs, seeds y tests: en un request
+   * HTTP el contexto ya lo montan `TenantContextMiddleware` + `JwtAuthGuard`.
+   *
+   * ⚠️ **El callback tiene que ser `async` y `await`-ear sus queries.** Las
+   * `PrismaPromise` son perezosas: no ejecutan nada hasta que alguien llama a
+   * su `.then()`. Si devolvés la promesa sin esperarla, la query arranca
+   * *después* de que el contexto se desmontó y falla:
+   *
+   * ```ts
+   * ctx.run(tenant, () => prisma.scoped.branch.findMany());        // ❌ falla
+   * ctx.run(tenant, async () => await prisma.scoped.branch.findMany()); // ✅
+   * ```
+   */
   run<T>(ctx: TenantContext, fn: () => T): T {
     return this.als.run({ tenant: ctx }, fn);
   }
 
-  // Escape hatch para flows que legítimamente no tienen tenant en contexto:
-  // auth pre-login, seeds, jobs, webhooks de Mercado Pago, healthchecks, etc.
+  /**
+   * Escape hatch para flows que legítimamente no tienen tenant en contexto:
+   * auth pre-login, seeds, jobs, webhooks de Mercado Pago, healthchecks, etc.
+   *
+   * Aplica la misma advertencia que `run()`: el callback debe `await`-ear sus
+   * queries para que corran dentro del contexto.
+   */
   runWithoutTenant<T>(fn: () => T): T {
     return this.als.run({ tenant: null }, fn);
   }
