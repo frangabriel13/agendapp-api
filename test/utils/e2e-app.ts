@@ -121,6 +121,28 @@ export async function registerTenant(
   };
 }
 
+/**
+ * Cambia el plan del negocio. El registro siempre entrega el plan "básico"
+ * (1 sucursal, 1 empleado: solo el dueño), así que casi todo lo que tenga que
+ * ver con equipos o varias sucursales necesita mover el plan primero.
+ */
+export async function switchPlan(
+  prisma: PrismaService,
+  tenantId: string,
+  slug: string,
+): Promise<void> {
+  const plan = await prisma.plan.findUnique({ where: { slug } });
+
+  if (!plan) {
+    throw new Error(`El seed no tiene el plan "${slug}"`);
+  }
+
+  await prisma.tenant.update({
+    where: { id: tenantId },
+    data: { planId: plan.id },
+  });
+}
+
 /** Azúcar para no repetir el header en cada request. */
 export const auth = (token: string): [string, string] => [
   'Authorization',

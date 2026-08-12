@@ -8,7 +8,7 @@
 
 ## 📌 Estado actual del repo
 
-> **Fases 0 y 1 cerradas; la 2.1 (sucursales) también.** El próximo paso es la 2.2 (empleados).
+> **Fases 0, 1 y 2 cerradas.** El próximo paso es la Fase 3 (catálogo de servicios).
 
 **Cimientos (Fase 0)**
 
@@ -37,8 +37,10 @@
 
 - ✅ Migración `20260812112622_branches`: `Branch`, `BranchBusinessHour` y `BranchSpecialDay`, con los CHECK de horario y el índice único parcial de nombre por tenant.
 - ✅ `BranchesModule`: CRUD de sucursales con validación de `plan.maxBranches`, horario semanal (`PUT` que reemplaza los 7 días) y días especiales.
-- ✅ Total del repo: **104 tests unitarios + 85 e2e**.
-- ❌ Falta la 2.2: empleados (`EmployeeBranch`, `EmployeeSchedule`, `EmployeeTimeOff` y el flujo de invitación).
+- ✅ Migración `20260812122603_employees`: `EmployeeInvitation`, `EmployeeBranch`, `EmployeeSchedule` y `EmployeeTimeOff`; `Employee` completo y `users.password_hash` ahora nullable.
+- ✅ `EmployeesModule`: invitación con link de activación (sin email todavía), activación pública, permisos, sucursales asignadas, horario semanal con turno partido y ausencias.
+- ✅ Total del repo: **167 tests unitarios + 132 e2e**.
+- ⏭️ Diferido: el envío del link por email (misma deadline que el resto de los mails, antes de la Fase 7). Hoy el link viaja en la respuesta de `POST /employees`.
 - ❌ Todavía sin RLS (Fase 8) ni catálogo (Fase 3 en adelante).
 
 ---
@@ -49,7 +51,7 @@
 |---|---|---|
 | ✅ 0 | Cimientos transversales | Decisiones base (IDs, soft delete, tenant scoping, logging, swagger) |
 | ✅ 1 | Auth + Tenant base | Registro, login, JWT, planes, suscripción |
-| 2 | Estructura del negocio | Sucursales y empleados |
+| ✅ 2 | Estructura del negocio | Sucursales y empleados |
 | 3 | Catálogo | Servicios, categorías, recursos |
 | 4 | Clientes | Customers + tags |
 | 5 | Turnos (corazón) | Appointments + disponibilidad + recurrencia |
@@ -289,6 +291,9 @@ bloquear la respuesta.
 
 - `POST /auth/forgot-password` + `POST /auth/reset-password` (tabla nueva `password_reset_tokens`).
 - `POST /auth/verify-email` + reenvío (el campo `users.email_verified_at` ya existe desde la Fase 1).
+- **Mandar por mail el link de invitación de empleados**, que hoy vuelve en la respuesta de `POST /employees`. Es sumar el envío, no rehacer el flujo: la tabla de tokens y el endpoint de activación ya son los definitivos.
+
+Cuando toque, el reset de contraseña puede reusar `opaque-token.util.ts` y copiar la forma de `employee_invitations`: token `<id>.<secret>`, hash argon2, un solo uso y vencimiento.
 
 Posponerlo no genera deuda: no toca nada de lo construido en la Fase 1, solo suma
 una tabla y endpoints. El riesgo real es el **reset de contraseña** — hasta que
@@ -325,7 +330,7 @@ Reglas:
 - **Limitación conocida**: `closes_at > opens_at` no admite horarios que crucen la medianoche. No aplica al rubro hoy.
 - **Tests**: 40 e2e (incluido el aislamiento entre negocios en sucursales, horarios y días especiales) + 26 unitarios nuevos.
 
-### 2.2 Empleados
+### ✅ 2.2 Empleados
 
 Migración: `Employee`, `EmployeeBranch`, `EmployeeSchedule`, `EmployeeTimeOff`.
 
@@ -343,6 +348,18 @@ Endpoints clave:
 - `POST /employees/:id/time-off` — vacaciones / ausencias.
 
 Validar `maxEmployees` del plan al crear (incluye al owner — chequear `is_owner`).
+
+**Cómo quedó:**
+
+- **13 endpoints.** Leer el equipo alcanza con estar autenticado; administrarlo es `OWNER` + `ADMINISTRATIVE`.
+- **La invitación sin email.** Como los mails están diferidos, `POST /employees` **devuelve el link de activación en la respuesta** y el dueño se lo hace llegar al empleado por donde quiera. Cuando exista el proveedor de mail, el email pasa a ser un canal más y el flujo no cambia: la tabla de tokens y el endpoint de activación ya son los definitivos.
+- **`users.password_hash` pasó a nullable.** Un invitado tiene cuenta pero no contraseña, y sin contraseña no se puede entrar: `login` lo rechaza con el mismo mensaje y el mismo tiempo que a un email desconocido. TypeScript marcó solo los dos lugares que había que tocar.
+- **El token de invitación es opaco** (`<id>.<secret>`, hash argon2), igual que el refresh token — de ahí salió `opaque-token.util.ts`, que ahora comparten los dos y va a usar el reset de contraseña. Se canjea una sola vez, vence a las 72 h y reinvitar revoca el anterior (índice parcial en la base: una sola invitación viva por empleado).
+- **Todos los rechazos de la activación dicen exactamente lo mismo.** Distinguir "no existe" de "ya se usó" o "está vencido" le diría a cualquiera con un link viejo si esa cuenta existe y en qué estado está. Hay un test que lo fija.
+- **El horario del empleado NO es como el de la sucursal**: una fila por tramo en vez de una por día, para soportar el turno partido. Un día sin filas es un día que no trabaja. Los tramos no se pueden pisar **ni siquiera entre sucursales distintas** — la persona es una sola.
+- **Protecciones**: al dueño no se lo puede desactivar, borrar ni cambiar de rol; nadie puede desactivarse ni darse de baja a sí mismo (evita quedarse afuera del propio negocio). Sacarle una sucursal a un empleado borra el horario que tenía ahí.
+- **`status` derivado**: `PENDING` mientras no aceptó la invitación, `ACTIVE` después. Sale de si tiene `passwordHash`, y el mapper arma la respuesta campo por campo justamente para que ese hash no se escape nunca.
+- **Tests**: 47 e2e (invitar → activar → loguear, límites del plan, aislamiento entre negocios) + 43 unitarios.
 
 **✅ Done cuando:** se puede crear una sucursal con horarios, invitar un empleado, asignarle sucursales y un horario semanal distinto por sucursal.
 

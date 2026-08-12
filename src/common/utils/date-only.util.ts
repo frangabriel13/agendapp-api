@@ -1,3 +1,5 @@
+import { BadRequestException } from '@nestjs/common';
+
 /**
  * Traducción entre la fecha calendario que viaja por la API (`"2026-12-25"`) y
  * el tipo `DATE` de Postgres.
@@ -36,4 +38,22 @@ export function dateOnlyToDate(value: string): Date {
 /** `Date(2026-12-25T00:00:00Z)` → `"2026-12-25"`, listo para responder. */
 export function dateToDateOnly(value: Date): string {
   return value.toISOString().slice(0, 10);
+}
+
+/**
+ * Igual que `dateOnlyToDate` pero traduciendo el error a un 400.
+ *
+ * Los regex de los DTOs validan la forma (`YYYY-MM-DD`) y dejan pasar un 31 de
+ * febrero: eso solo lo detecta el parseo. Sin esta traducción, una fecha que no
+ * existe en el calendario saldría como 500 en vez de 400.
+ */
+export function parseDateOnly(value: string): Date {
+  try {
+    return dateOnlyToDate(value);
+  } catch (error) {
+    if (error instanceof RangeError) {
+      throw new BadRequestException(error.message);
+    }
+    throw error;
+  }
 }

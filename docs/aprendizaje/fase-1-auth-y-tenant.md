@@ -6,6 +6,7 @@
 >
 > Complementa a:
 > - [`fase-0-cimientos.md`](./fase-0-cimientos.md) — los cimientos que esta fase usa.
+> - [`fase-2-negocio.md`](./fase-2-negocio.md) — la fase siguiente: sucursales y empleados.
 > - [`../development-roadmap.md`](../development-roadmap.md) — el plan fase por fase.
 > - [`../database-reference.md`](../database-reference.md) — el modelo de datos.
 
@@ -273,4 +274,5 @@ empleado, el aislamiento entre dos negocios y la red de seguridad del tenant-sco
 
 Lo próximo es la **Fase 2: sucursales y empleados**, que es la primera vez que voy a
 escribir un service de negocio usando `prisma.scoped` desde cero — sin acordarme del
-`tenantId` en ninguna query.
+`tenantId` en ninguna query. Está contada en
+[`fase-2-negocio.md`](./fase-2-negocio.md).

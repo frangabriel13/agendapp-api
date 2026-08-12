@@ -171,7 +171,8 @@ agendapp-api/
 │       ├── health/             # GET /health
 │       ├── auth/               # registro, login, refresh, me
 │       ├── tenants/            # GET/PATCH /tenants/me (+ branding, settings)
-│       └── branches/           # sucursales + horarios + días especiales
+│       ├── branches/           # sucursales + horarios + días especiales
+│       └── employees/          # equipo: invitación, horarios, ausencias
 ├── test/                       # tests e2e
 └── .env                        # variables locales (no comiteado)
 ```
@@ -359,13 +360,15 @@ Resumen a hoy:
 - Configuración del negocio: `GET/PATCH /tenants/me`, `/branding` y `/settings`.
 - Sucursales: CRUD con límite por plan, horario semanal y días especiales
   (feriados y jornadas con horario distinto).
+- Empleados: invitación con link de activación, permisos por rol, sucursales
+  asignadas, horario semanal por sucursal (con turno partido) y ausencias.
 
-- Suite de tests: 104 unitarios + 85 e2e contra Postgres real (flujo completo de
-  registro a edición del negocio, rotación de tokens y aislamiento entre negocios).
+- Suite de tests: 167 unitarios + 132 e2e contra Postgres real (flujo completo de
+  registro a edición del negocio, invitación y activación de empleados, rotación
+  de tokens y aislamiento entre negocios).
 
 **Lo que sigue**
 
-- Fase 2.2: empleados (invitación, sucursales asignadas y horario semanal por sucursal).
 - Fase 3: catálogo de servicios. Fase 4: clientes.
 - Fase 5: turnos y disponibilidad (el corazón). Fase 6: pagos con Mercado Pago.
 - Fase 7: portal público de reservas. Fase 8: auditoría, RLS y jobs con BullMQ.

@@ -9,8 +9,8 @@ import { Prisma } from '@prisma/client';
 import { TenantContextMissingError } from '../../common/errors/tenant-context-missing.error';
 import { TenantContextService } from '../../common/tenant-context';
 import {
-  dateOnlyToDate,
   dateToDateOnly,
+  parseDateOnly,
 } from '../../common/utils/date-only.util';
 import {
   dateToTimeOfDayOrNull,
@@ -226,8 +226,8 @@ export class BranchesService {
     await this.findBranchOrFail(branchId);
 
     const date = pickDefined<Prisma.DateTimeFilter>({
-      gte: query.from === undefined ? undefined : this.parseDate(query.from),
-      lte: query.to === undefined ? undefined : this.parseDate(query.to),
+      gte: query.from === undefined ? undefined : parseDateOnly(query.from),
+      lte: query.to === undefined ? undefined : parseDateOnly(query.to),
     });
 
     const days = await this.prisma.scoped.branchSpecialDay.findMany({
@@ -255,7 +255,7 @@ export class BranchesService {
       const created = await this.prisma.scoped.branchSpecialDay.create({
         data: scopedCreate<Prisma.BranchSpecialDayUncheckedCreateInput>({
           branchId,
-          date: this.parseDate(dto.date),
+          date: parseDateOnly(dto.date),
           description: dto.description ?? null,
           ...schedule,
         }),
@@ -466,22 +466,6 @@ export class BranchesService {
       opensAt: timeOfDayToDate(day.opensAt),
       closesAt: timeOfDayToDate(day.closesAt),
     };
-  }
-
-  /**
-   * El regex del DTO valida la forma (`YYYY-MM-DD`), pero deja pasar un 31 de
-   * febrero: eso lo detecta el parseo. Sin esta traducción, un día que no
-   * existe en el calendario saldría como 500 en vez de 400.
-   */
-  private parseDate(value: string): Date {
-    try {
-      return dateOnlyToDate(value);
-    } catch (error) {
-      if (error instanceof RangeError) {
-        throw new BadRequestException(error.message);
-      }
-      throw error;
-    }
   }
 
   /**
