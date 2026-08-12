@@ -8,11 +8,9 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { trim } from '../../../common/utils/trim.transform';
 
 /** Normaliza strings de entrada: recorta espacios sobrantes. */
-const trim = ({ value }: { value: unknown }): unknown =>
-  typeof value === 'string' ? value.trim() : value;
-
 const lowercaseTrim = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim().toLowerCase() : value;
 

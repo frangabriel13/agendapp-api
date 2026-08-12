@@ -203,44 +203,62 @@ Cobros realizados de la suscripción.
 ## 🏬 4. Sucursales
 
 ### `branches`
-Sucursales físicas del negocio.
+Sucursales físicas del negocio. El alta valida `plan.max_branches`.
 
 | Campo | Tipo | Notas |
 |---|---|---|
 | `id` | UUID | PK |
 | `tenant_id` | UUID | FK → tenants |
-| `name` | VARCHAR | |
+| `name` | VARCHAR(120) | único por tenant entre las no borradas |
 | `address` | VARCHAR | nullable |
 | `phone` | VARCHAR | nullable |
-| `is_active` | BOOLEAN | |
+| `is_active` | BOOLEAN | desactivada ≠ borrada: sigue ocupando lugar del plan |
 | `created_at` | TIMESTAMP | |
 | `updated_at` | TIMESTAMP | |
 | `deleted_at` | TIMESTAMP | nullable |
 
 ### `branch_business_hours`
-Horario de atención por día de la semana.
+Horario de atención por día de la semana. Siempre 7 filas por sucursal.
 
 | Campo | Tipo | Notas |
 |---|---|---|
 | `id` | UUID | PK |
+| `tenant_id` | UUID | FK → tenants |
 | `branch_id` | UUID | FK → branches |
-| `day_of_week` | INT | 0=domingo, 6=sábado |
-| `opens_at` | TIME | |
-| `closes_at` | TIME | |
+| `day_of_week` | SMALLINT | 0=domingo, 6=sábado |
+| `opens_at` | TIME | nullable (null si el día está cerrado) |
+| `closes_at` | TIME | nullable (null si el día está cerrado) |
 | `is_closed` | BOOLEAN | si el día está cerrado |
+| `created_at` | TIMESTAMP | |
+| `updated_at` | TIMESTAMP | |
+
+**Constraints:** `UNIQUE(branch_id, day_of_week)`, `CHECK (day_of_week BETWEEN 0 AND 6)` y el CHECK de horario: o cerrado y sin horas, o abierto con las dos y `closes_at > opens_at`.
 
 ### `branch_special_days`
-Feriados, vacaciones, días especiales por sucursal.
+Feriados, vacaciones, días especiales por sucursal. Pisan al horario semanal.
 
 | Campo | Tipo | Notas |
 |---|---|---|
 | `id` | UUID | PK |
+| `tenant_id` | UUID | FK → tenants |
 | `branch_id` | UUID | FK → branches |
 | `date` | DATE | |
-| `is_closed` | BOOLEAN | |
+| `is_closed` | BOOLEAN | default `true` (el caso común es el feriado) |
 | `opens_at` | TIME | nullable |
 | `closes_at` | TIME | nullable |
 | `description` | VARCHAR | nullable |
+| `created_at` | TIMESTAMP | |
+| `updated_at` | TIMESTAMP | |
+
+**Constraints:** `UNIQUE(branch_id, date)` y el mismo CHECK de horario que `branch_business_hours`.
+
+**Estado de implementación:** las tres tablas existen desde la Fase 2.1 (migración `20260812112622_branches`), con tres decisiones que se apartan del modelo conceptual de arriba:
+
+1. **`tenant_id` también en las tablas hijas**, aunque se llegue a ellas por `branch_id`. Es la convención de todas las tablas de negocio: sin esa columna la extension de tenant-scope no las puede filtrar (habría que exceptuarlas) y la RLS de la Fase 8 tampoco tendría por dónde agarrarlas.
+2. **`opens_at` / `closes_at` nullables en `branch_business_hours`**, para que un día cerrado no tenga que inventar horas. El CHECK obliga a que sea todo o nada, así que no puede quedar un día "abierto" sin horario.
+3. **`branches` tiene un índice único parcial** `(tenant_id, lower(name)) WHERE deleted_at IS NULL`: dos sucursales con el mismo nombre no se distinguen al agendar. Es parcial para que dar de baja una libere el nombre, y sobre `lower(name)` para que "Centro" y "centro" cuenten como el mismo.
+
+Los `TIME` viajan por la API como `"HH:MM"` y las fechas como `"YYYY-MM-DD"`: Prisma los devuelve como `Date` (ancladas al 1970-01-01 y a medianoche UTC respectivamente) y la conversión vive en `src/common/utils/`. **Limitación conocida:** `closes_at > opens_at` no admite horarios que crucen la medianoche.
 
 ---
 

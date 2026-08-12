@@ -165,12 +165,13 @@ agendapp-api/
 │   │   ├── filters/            # AllExceptionsFilter
 │   │   ├── guards/             # RolesGuard
 │   │   ├── tenant-context/     # AsyncLocalStorage + middleware
-│   │   └── utils/              # slugify, etc.
+│   │   └── utils/              # slugify, horas y fechas sin instante, transforms
 │   ├── prisma/                 # PrismaService + extensions (soft-delete, tenant-scope)
 │   └── modules/                # ⭐ feature modules (dominio)
 │       ├── health/             # GET /health
 │       ├── auth/               # registro, login, refresh, me
-│       └── tenants/            # GET/PATCH /tenants/me (+ branding, settings)
+│       ├── tenants/            # GET/PATCH /tenants/me (+ branding, settings)
+│       └── branches/           # sucursales + horarios + días especiales
 ├── test/                       # tests e2e
 └── .env                        # variables locales (no comiteado)
 ```
@@ -356,13 +357,16 @@ Resumen a hoy:
 - Auth completo: registro de negocio, login, refresh con rotación y detección de reuso, logout, `/auth/me`, cambio de contraseña.
 - Guard de JWT global (`@Public()` para abrir rutas) y autorización por rol (`@Roles()`).
 - Configuración del negocio: `GET/PATCH /tenants/me`, `/branding` y `/settings`.
+- Sucursales: CRUD con límite por plan, horario semanal y días especiales
+  (feriados y jornadas con horario distinto).
 
-- Suite de tests: 42 unitarios + 45 e2e contra Postgres real (flujo completo de
+- Suite de tests: 104 unitarios + 85 e2e contra Postgres real (flujo completo de
   registro a edición del negocio, rotación de tokens y aislamiento entre negocios).
 
 **Lo que sigue**
 
-- Fase 2: sucursales y empleados. Fase 3: catálogo de servicios. Fase 4: clientes.
+- Fase 2.2: empleados (invitación, sucursales asignadas y horario semanal por sucursal).
+- Fase 3: catálogo de servicios. Fase 4: clientes.
 - Fase 5: turnos y disponibilidad (el corazón). Fase 6: pagos con Mercado Pago.
 - Fase 7: portal público de reservas. Fase 8: auditoría, RLS y jobs con BullMQ.
 

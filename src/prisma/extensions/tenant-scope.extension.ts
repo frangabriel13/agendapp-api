@@ -16,6 +16,28 @@ export const TENANT_EXEMPT_MODELS = new Set<string>([
   'AuditLog', // tenantId nullable: actions del sistema sin tenant
 ]);
 
+/**
+ * Marca un `data` de create al que le falta el `tenantId` a propósito, porque
+ * lo pone la extension en runtime.
+ *
+ * Sin esto TypeScript rechaza el objeto (`tenantId` es obligatorio en los tipos
+ * generados) y la salida fácil sería un `as any`, que apaga el chequeo de TODOS
+ * los campos. Esto apaga uno solo:
+ *
+ * ```ts
+ * data: scopedCreate<Prisma.BranchUncheckedCreateInput>({ name: dto.name })
+ * ```
+ *
+ * No pasar el `tenantId` a mano no es solo comodidad: la extension hace
+ * `{ tenantId, ...data }`, así que un `tenantId` explícito le ganaría al del
+ * contexto.
+ */
+export function scopedCreate<T extends { tenantId: string }>(
+  data: Omit<T, 'tenantId'>,
+): T {
+  return data as T;
+}
+
 const READ_OPS_WITH_FLEXIBLE_WHERE = new Set([
   'findFirst',
   'findFirstOrThrow',

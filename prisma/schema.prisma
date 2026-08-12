@@ -180,10 +180,13 @@ model Tenant {
   owner User @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
   plan  Plan @relation(fields: [planId], references: [id], onDelete: Restrict)
 
-  branding      TenantBranding?
-  settings      TenantSettings?
-  employees     Employee[]
-  subscriptions Subscription[]
+  branding            TenantBranding?
+  settings            TenantSettings?
+  employees           Employee[]
+  subscriptions       Subscription[]
+  branches            Branch[]
+  branchBusinessHours BranchBusinessHour[]
+  branchSpecialDays   BranchSpecialDay[]
 
   @@index([planId])
   @@map("tenants")
@@ -224,7 +227,92 @@ model TenantSettings {
 }
 
 // ============================================================================
-// 4. EMPLEADOS (versión mínima — se completa en la Fase 2)
+// 4. SUCURSALES
+// ============================================================================
+
+/// Sucursal física del negocio. Un tenant puede tener varias según el plan
+/// (`Plan.maxBranches`, null = sin límite): el chequeo vive en BranchesService.
+///
+/// `isActive` y `deletedAt` NO son lo mismo: una sucursal inactiva sigue
+/// existiendo (cerrada por refacción, por temporada) y sigue ocupando un lugar
+/// del plan; una borrada desaparece de las listas.
+model Branch {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  name      String    @db.VarChar(120)
+  address   String?   @db.VarChar(255)
+  phone     String?   @db.VarChar(30)
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  businessHours BranchBusinessHour[]
+  specialDays   BranchSpecialDay[]
+
+  @@index([tenantId])
+  @@map("branches")
+}
+
+/// Horario de atención semanal: exactamente 7 filas por sucursal, una por día
+/// (`dayOfWeek` 0 = domingo … 6 = sábado). Las 7 nacen con la sucursal y no se
+/// crean ni se borran de a una: se reemplaza la semana entera.
+///
+/// `opensAt`/`closesAt` son TIME (hora de pared, sin fecha ni zona): la zona
+/// horaria del negocio vive en `Tenant.timezone`. En un día cerrado van en
+/// null; el CHECK de la migración obliga a que sea todo o nada.
+///
+/// Limitación conocida: `closesAt > opensAt` no admite cruzar la medianoche
+/// (un local que cierra a las 02:00). No aplica al rubro hoy; si algún día
+/// hace falta, se resuelve con una fila extra para el tramo después de las 00.
+model BranchBusinessHour {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  branchId  String    @map("branch_id") @db.Uuid
+  dayOfWeek Int       @map("day_of_week") @db.SmallInt
+  opensAt   DateTime? @map("opens_at") @db.Time(0)
+  closesAt  DateTime? @map("closes_at") @db.Time(0)
+  isClosed  Boolean   @default(false) @map("is_closed")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, dayOfWeek])
+  @@index([tenantId])
+  @@map("branch_business_hours")
+}
+
+/// Excepción al horario semanal para una fecha puntual: feriado, vacaciones o
+/// jornada con horario especial. Pisa a `BranchBusinessHour` para ese día.
+///
+/// `isClosed = true` (el caso común) es un feriado y va sin horas.
+/// `isClosed = false` es una jornada con horario distinto y las exige.
+model BranchSpecialDay {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  branchId    String    @map("branch_id") @db.Uuid
+  date        DateTime  @db.Date
+  isClosed    Boolean   @default(true) @map("is_closed")
+  opensAt     DateTime? @map("opens_at") @db.Time(0)
+  closesAt    DateTime? @map("closes_at") @db.Time(0)
+  description String?   @db.VarChar(255)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, date])
+  @@index([tenantId])
+  @@map("branch_special_days")
+}
+
+// ============================================================================
+// 5. EMPLEADOS (versión mínima — se completa en la Fase 2.2)
 // ============================================================================
 
 /// El dueño del negocio es una fila más de esta tabla, con `isOwner = true`.
