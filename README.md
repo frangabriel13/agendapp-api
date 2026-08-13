@@ -105,6 +105,21 @@ correrlo las veces que quieras y actualiza las filas por `slug`.
 
 > Sin este paso, `POST /auth/register` devuelve 500: todo negocio nuevo arranca en el plan `basico` y no lo va a encontrar.
 
+Opcionalmente, para no tener que crear todo a mano mientras desarrollás:
+
+```bash
+npm run seed:demo
+```
+
+Deja un negocio (`Peluquería Demo`) con dos sucursales, horarios cargados, un
+feriado y tres empleados: el dueño, una profesional con turno partido y una
+invitada que todavía no activó su cuenta. Todas las cuentas usan la contraseña
+`demo1234`, y el comando imprime el **link de activación** de la invitada para
+poder probar esa pantalla.
+
+Se puede correr las veces que haga falta: borra el negocio de demo anterior y lo
+vuelve a crear. No toca ningún otro negocio de la base.
+
 ### 7. Levantar el servidor en modo dev
 
 ```bash
@@ -256,11 +271,46 @@ npx nest g resource modules/users
 |---|---|
 | `http://localhost:3001` | API |
 | `http://localhost:3001/api` | Swagger (documentación interactiva) |
+| `http://localhost:3001/api-json` | El mismo contrato en OpenAPI, para generar clientes |
 | `http://localhost:3001/health` | Health check |
 | `http://localhost:8080` | Adminer (GUI Postgres) — login: `postgres` / `agendapp` / `agendapp_dev_password` / `agendapp` |
 | `http://localhost:5555` | Prisma Studio (cuando corrés `npx prisma studio`) |
 
 > Nota: en Adminer, el campo "Server" tiene que ser `postgres` (nombre del contenedor en la red Docker), **no** `localhost`.
+
+---
+
+## Consumir la API desde el frontend
+
+### CORS
+
+El navegador bloquea que una página de un origen llame a otro, así que los
+orígenes permitidos se declaran en `CORS_ORIGINS` (separados por coma). El
+default es `http://localhost:3000`, que es el Next de desarrollo.
+
+Si el frontend corre en otro puerto, hay que agregarlo ahí — el síntoma de que
+falta es un error de CORS en la consola del navegador, con la request saliendo
+en rojo antes de llegar a la API.
+
+Los headers de rate limit se exponen explícitamente (`Access-Control-Expose-Headers`),
+porque si no el JavaScript del cliente no los puede leer aunque viajen en la
+respuesta. Se llaman `X-RateLimit-Limit-short`, `-long`, etc.: **el nombre del
+throttler va como sufijo**.
+
+### Tipos de TypeScript generados
+
+En vez de escribir a mano las interfaces del cliente, conviene generarlas desde
+el OpenAPI que ya publica Swagger. Con la API levantada, desde el repo del
+frontend:
+
+```bash
+npx openapi-typescript http://localhost:3001/api-json -o lib/api-types.ts
+```
+
+Salen los enums como uniones de strings, los nullables respetados y las
+descripciones como JSDoc. Cuando el backend cambia, se vuelve a correr el
+comando y **TypeScript marca en rojo todo lo que quedó roto** en el frontend, en
+vez de fallar en runtime.
 
 ---
 
