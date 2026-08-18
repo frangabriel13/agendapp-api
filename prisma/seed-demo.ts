@@ -58,6 +58,9 @@ const DEMO = {
   },
 } as const;
 
+/** La plata se guarda en centavos, nunca en decimales. */
+const pesosToCents = (pesos: number): number => pesos * 100;
+
 /** `"09:00"` → el `Date` anclado al epoch que espera una columna TIME. */
 const time = (value: string): Date => new Date(`1970-01-01T${value}:00.000Z`);
 
@@ -276,6 +279,99 @@ async function main(): Promise<void> {
         data: { tenantId: tenant.id, employeeId: pending.id, branchId: centro.id },
       });
 
+      // ── Catálogo: categorías, servicios y quién los presta ───────────
+      const [corteCat, colorCat] = await Promise.all([
+        tx.serviceCategory.create({
+          data: { tenantId: tenant.id, name: 'Corte', displayOrder: 1 },
+          select: { id: true },
+        }),
+        tx.serviceCategory.create({
+          data: { tenantId: tenant.id, name: 'Color', displayOrder: 2 },
+          select: { id: true },
+        }),
+      ]);
+
+      const corte = await tx.service.create({
+        data: {
+          tenantId: tenant.id,
+          categoryId: corteCat.id,
+          name: 'Corte de dama',
+          description: 'Lavado, corte y peinado.',
+          durationMinutes: 45,
+          priceCents: pesosToCents(15_000),
+          bufferAfterMinutes: 10,
+          color: '#7C3AED',
+        },
+        select: { id: true },
+      });
+
+      const coloracion = await tx.service.create({
+        data: {
+          tenantId: tenant.id,
+          categoryId: colorCat.id,
+          name: 'Coloración completa',
+          description: 'Color de raíz a puntas. Incluye lavado.',
+          durationMinutes: 120,
+          priceCents: pesosToCents(45_000),
+          depositAmountCents: pesosToCents(15_000),
+          bufferAfterMinutes: 15,
+          color: '#DB2777',
+        },
+        select: { id: true },
+      });
+
+      // Lucía hace corte en las dos sucursales, pero color solo en Centro:
+      // el front necesita ese caso para no asumir "un servicio, todos lados".
+      await tx.employeeService.createMany({
+        data: [
+          {
+            tenantId: tenant.id,
+            employeeId: active.id,
+            serviceId: corte.id,
+            branchId: centro.id,
+          },
+          {
+            tenantId: tenant.id,
+            employeeId: active.id,
+            serviceId: corte.id,
+            branchId: palermo.id,
+          },
+          {
+            tenantId: tenant.id,
+            employeeId: active.id,
+            serviceId: coloracion.id,
+            branchId: centro.id,
+          },
+        ],
+      });
+
+      // ── Recursos: la coloración ocupa la sala, el corte no ───────────
+      const salaColor = await tx.resource.create({
+        data: {
+          tenantId: tenant.id,
+          branchId: centro.id,
+          name: 'Sala de color',
+          description: 'Única sala con lavabo reclinable.',
+        },
+        select: { id: true },
+      });
+
+      await tx.resource.create({
+        data: {
+          tenantId: tenant.id,
+          branchId: palermo.id,
+          name: 'Sillón 1',
+        },
+      });
+
+      await tx.serviceResource.create({
+        data: {
+          tenantId: tenant.id,
+          serviceId: coloracion.id,
+          resourceId: salaColor.id,
+        },
+      });
+
       return { tenantId: tenant.id, pendingEmployeeId: pending.id };
     },
   );
@@ -309,6 +405,7 @@ async function main(): Promise<void> {
    ${DEMO.pending.email.padEnd(24)} administrativa, INVITADA (no puede entrar todavía)
 
    2 sucursales con horario cargado · 1 feriado · turno partido · 1 ausencia
+   2 categorías · 2 servicios · 2 recursos · 1 servicio que requiere sala
 
    Link para probar la pantalla de activación:
    ${activationUrl}

@@ -366,6 +366,21 @@ Acá `starts_at`/`ends_at` sí son instantes (`TIMESTAMPTZ`), no hora de pared: 
 
 ## ✂️ 6. Servicios y Recursos
 
+> **Estado: implementado (Fase 3).** Migraciones `20260818145928_services` y
+> `20260818151406_resources`. Lo construido agrega sobre este modelo conceptual:
+>
+> - `service_categories` y `services` llevan `updated_at`, como el resto de las
+>   tablas de negocio.
+> - `employee_services` y `service_resources` llevan `tenant_id` (convención
+>   transversal; las dos están exentas de soft delete por ser tablas de unión).
+> - Índices únicos parciales: nombre de categoría por tenant, y nombre de
+>   recurso **por sucursal**. Servicios NO tiene unique de nombre a propósito:
+>   "Corte" puede existir en Damas y en Caballeros con precios distintos.
+> - CHECK en `services`: duración entre 1 y 1440, precio ≥ 0, seña entre 0 y el
+>   precio, buffer entre 0 y 1440, color con formato `#RRGGBB`.
+> - Los recursos son una feature de plan: `plan.includes_resources` habilita el
+>   alta.
+
 ### `service_categories`
 Categorías de servicios (las crea el owner).
 

@@ -40,13 +40,14 @@ rompe algo, aparece como error de compilación en vez de como bug en runtime.
 ### Datos de demo
 
 `npm run seed:demo` crea el tenant **Peluquería Demo** (slug `peluqueria-demo`,
-plan `avanzado`) con 2 sucursales con horario, 1 feriado y 3 empleados:
+plan `avanzado`) con 2 sucursales con horario, 1 feriado, 3 empleados y un
+catálogo cargado (2 categorías, 2 servicios, 2 recursos):
 
 | Email | Rol | Estado |
 |---|---|---|
 | `dueno@demo.test` | `OWNER` | activo |
 | `profesional@demo.test` | `PROFESSIONAL` | activo, con turno partido y una ausencia |
-| `invitada@demo.test` | `PROFESSIONAL` | **pendiente** de activación |
+| `invitada@demo.test` | `ADMINISTRATIVE` | **pendiente** de activación |
 
 Contraseña de los activos: `demo1234`. El seed imprime el link de activación de
 la empleada pendiente, útil para probar esa pantalla.
@@ -260,7 +261,7 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 
 ## Qué existe hoy y qué no
 
-**Disponible — 37 endpoints:**
+**Disponible — 56 endpoints:**
 
 | Área | Endpoints | Alcanza para |
 |---|---|---|
@@ -268,17 +269,49 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 | `/tenants` | 6 | Configuración del negocio, branding (colores y logo), preferencias |
 | `/branches` | 11 | CRUD de sucursales, horario semanal, feriados y días especiales |
 | `/employees` | 13 | CRUD, invitación con link, activación pública, permisos, asignación a sucursales, horario con turno partido, ausencias |
+| `/service-categories` | 5 | CRUD de categorías del catálogo |
+| `/services` | 9 | CRUD de servicios, quién los presta y dónde, qué recursos requieren |
+| `/resources` | 5 | CRUD de camillas, salas y sillones por sucursal |
 | `/health` | 1 | Healthcheck |
 
 **Todavía no existe:**
 
-- Servicios, categorías y precios (Fase 3)
 - Clientes (Fase 4)
 - **Turnos, disponibilidad y calendario** (Fase 5)
 - Pagos (Fase 6) y portal público de reservas (Fase 7)
 
 No conviene diseñar contra estos: el contrato todavía no está definido y va a
 cambiar.
+
+### Detalle sobre el catálogo (Fase 3)
+
+Tres cosas que conviene saber antes de armar la pantalla:
+
+**El precio va en centavos, `Int`.** `priceCents: 1500000` son $15.000. Lo mismo
+`depositAmountCents` (la seña, `null` = el servicio no pide seña). La seña no
+puede superar al precio, ni siquiera indirectamente: bajar el precio por debajo
+de una seña ya cargada devuelve 400. Si el usuario baja el precio, mandá los dos
+campos juntos.
+
+**Un servicio se presta en una sucursal concreta, por una persona concreta.**
+`PUT /services/:id/employees` recibe `{ assignments: [{ employeeId, branchId }] }`
+y reemplaza la lista completa. Cada par se valida contra las sucursales del
+empleado: si no trabaja ahí, es 400. O sea que el selector de "quién presta este
+servicio" tiene que dejar elegir **persona + sucursal**, no solo persona. En el
+seed, Lucía hace corte en las dos sucursales pero color solo en Centro — sirve
+para probar ese caso.
+
+**Los recursos (camillas, salas) son feature de plan.** Con el plan Básico,
+`POST /resources` devuelve 403 con un mensaje explicando que hay que cambiar de
+plan; conviene mostrarlo tal cual. El gate corre solo en el alta: si un negocio
+baja de plan, sigue viendo y editando lo que ya tenía cargado. El nombre del
+recurso es único **por sucursal**, así que "Camilla 1" puede existir en Centro y
+en Palermo.
+
+Detalles menores: el `color` del servicio es `#RRGGBB` y va directo al calendario;
+`durationMinutes` va de 1 a 1440; las categorías se ordenan por `displayOrder` y,
+a igual valor, alfabéticamente; dar de baja una categoría **no** borra sus
+servicios, los deja con `category: null`.
 
 ### Detalle sobre la invitación de empleados
 

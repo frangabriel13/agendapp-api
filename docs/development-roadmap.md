@@ -8,7 +8,7 @@
 
 ## 📌 Estado actual del repo
 
-> **Fases 0, 1 y 2 cerradas.** El próximo paso es la Fase 3 (catálogo de servicios).
+> **Fases 0 a 3 cerradas.** El próximo paso es la Fase 4 (clientes).
 
 **Cimientos (Fase 0)**
 
@@ -39,9 +39,22 @@
 - ✅ `BranchesModule`: CRUD de sucursales con validación de `plan.maxBranches`, horario semanal (`PUT` que reemplaza los 7 días) y días especiales.
 - ✅ Migración `20260812122603_employees`: `EmployeeInvitation`, `EmployeeBranch`, `EmployeeSchedule` y `EmployeeTimeOff`; `Employee` completo y `users.password_hash` ahora nullable.
 - ✅ `EmployeesModule`: invitación con link de activación (sin email todavía), activación pública, permisos, sucursales asignadas, horario semanal con turno partido y ausencias.
-- ✅ Total del repo: **193 tests unitarios + 134 e2e**.
 - ⏭️ Diferido: el envío del link por email (misma deadline que el resto de los mails, antes de la Fase 7). Hoy el link viaja en la respuesta de `POST /employees`.
-- ❌ Todavía sin RLS (Fase 8) ni catálogo (Fase 3 en adelante).
+
+**Catálogo (Fase 3)**
+
+- ✅ Migración `20260818145928_services`: `ServiceCategory`, `Service` y `EmployeeService`, con el índice único parcial de nombre de categoría por tenant y los CHECK de duración, precio, seña y formato de color.
+- ✅ Migración `20260818151406_resources`: `Resource` y `ServiceResource`, con el índice único parcial de nombre **por sucursal** (no por tenant: el mismo nombre puede repetirse en dos locales).
+- ✅ `ServiceCategoriesModule`: CRUD. Dar de baja una categoría deja sus servicios sin categoría en vez de arrastrarlos — el `ON DELETE SET NULL` de la FK no se dispara con baja lógica, así que lo hace el service.
+- ✅ `ServicesModule`: CRUD, `PUT /services/:id/employees` (quién lo presta **y en qué sucursal**) y `PUT /services/:id/resources`.
+- ✅ `ResourcesModule`: CRUD por sucursal, con `plan.includesResources` como gate del alta.
+- ✅ Total del repo: **227 tests unitarios + 170 e2e**.
+- ❌ Todavía sin RLS (Fase 8) ni clientes/turnos (Fase 4 en adelante).
+
+**Dos reglas que la Fase 5 va a dar por sentadas**
+
+1. Un empleado solo puede prestar un servicio en una sucursal donde efectivamente trabaja (`employee_branches`). Se valida en el `PUT`, no en la base.
+2. `durationMinutes` + `bufferAfterMinutes` es lo que ocupa el turno. La disponibilidad se calcula con esos dos números.
 
 ---
 
@@ -52,7 +65,7 @@
 | ✅ 0 | Cimientos transversales | Decisiones base (IDs, soft delete, tenant scoping, logging, swagger) |
 | ✅ 1 | Auth + Tenant base | Registro, login, JWT, planes, suscripción |
 | ✅ 2 | Estructura del negocio | Sucursales y empleados |
-| 3 | Catálogo | Servicios, categorías, recursos |
+| ✅ 3 | Catálogo | Servicios, categorías, recursos |
 | 4 | Clientes | Customers + tags |
 | 5 | Turnos (corazón) | Appointments + disponibilidad + recurrencia |
 | 6 | Pagos | Mercado Pago (señas + suscripciones) |
