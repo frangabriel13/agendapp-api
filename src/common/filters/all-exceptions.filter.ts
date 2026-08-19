@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { ZodError } from 'zod';
+import { isExclusionViolation } from '../../prisma/exclusion-violation';
 import { TenantContextMissingError } from '../errors/tenant-context-missing.error';
 import type { Request, Response } from 'express';
 
@@ -109,6 +110,24 @@ export class AllExceptionsFilter implements ExceptionFilter {
       return this.mapPrismaKnownError(exception, base);
     }
 
+    /**
+     * Red de seguridad para el doble-booking (Fase 5).
+     *
+     * Prisma **no traduce** las violaciones de EXCLUDE constraint: llegan como
+     * un error crudo del driver, no como `PrismaClientKnownRequestError`. Los
+     * services de turnos las capturan y las convierten en un 409 con un mensaje
+     * que dice qué se pisó; esto es para el caso de que alguna ruta se escape,
+     * que salga 409 y no un 500.
+     */
+    if (isExclusionViolation(exception)) {
+      return {
+        ...base,
+        statusCode: HttpStatus.CONFLICT,
+        message: 'Conflicto de horario: ese lugar ya está ocupado',
+        error: 'Conflict',
+      };
+    }
+
     if (exception instanceof Prisma.PrismaClientValidationError) {
       return {
         ...base,
@@ -167,15 +186,6 @@ export class AllExceptionsFilter implements ExceptionFilter {
           error: 'Bad Request',
         };
       default:
-        // Postgres exclusion constraint (Fase 5: doble-booking de turnos).
-        if ((err.meta?.code as string | undefined) === '23P01') {
-          return {
-            ...base,
-            statusCode: HttpStatus.CONFLICT,
-            message: 'Conflicto de horario: el slot ya está ocupado',
-            error: 'Conflict',
-          };
-        }
         return {
           ...base,
           statusCode: HttpStatus.INTERNAL_SERVER_ERROR,

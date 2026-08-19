@@ -132,3 +132,19 @@ export function zonedDayOfWeek(dateOnly: string, timeZone: string): number {
 export function timeColumnToMinutes(value: Date): number {
   return value.getUTCHours() * 60 + value.getUTCMinutes();
 }
+
+/**
+ * Qué día del calendario es ese instante en esa zona. El inverso de
+ * `zonedWallTimeToUtc`: sirve para saber a qué jornada pertenece un turno, que
+ * no siempre es la del mismo día en UTC.
+ */
+export function zonedDateOnly(instant: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(instant);
+
+  return parts;
+}
