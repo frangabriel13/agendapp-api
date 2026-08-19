@@ -1,17 +1,27 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import {
+  AppointmentSource,
+  AppointmentStatus,
+  Prisma,
+  type CancellationRefundType,
+} from '@prisma/client';
 import { TenantContextMissingError } from '../../common/errors/tenant-context-missing.error';
 import { TenantContextService } from '../../common/tenant-context';
 import { parseDateOnly } from '../../common/utils/date-only.util';
 import {
   MINUTES_PER_DAY,
   timeColumnToMinutes,
+  zonedDateOnly,
   zonedDayOfWeek,
   zonedWallTimeToUtc,
 } from '../../common/utils/timezone.util';
+import { exclusionViolationConstraint } from '../../prisma/exclusion-violation';
+import { scopedCreate } from '../../prisma/extensions';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   BLOCKING_STATUSES,
@@ -21,12 +31,107 @@ import {
   subtractIntervals,
   type Interval,
 } from './availability';
+import {
+  allowedTransitions,
+  canTransition,
+  isCanceled,
+  isTerminal,
+  resolveRefund,
+  type CancellationPolicy,
+} from './status-machine';
+import { MAX_RANGE_DAYS } from './dto/appointment.dto';
+import type {
+  AppointmentResponseDto,
+  ChangeAppointmentStatusDto,
+  ChangeStatusResultDto,
+  CreateAppointmentDto,
+  ListAppointmentsQueryDto,
+  RescheduleAppointmentDto,
+  UpdateAppointmentDto,
+} from './dto/appointment.dto';
 import type {
   AvailabilityQueryDto,
   AvailabilityResponseDto,
   AvailabilitySlotDto,
   AvailableEmployeeDto,
 } from './dto/availability.dto';
+
+/** Todo lo que hace falta para responder un turno completo. */
+const APPOINTMENT_SELECT = {
+  id: true,
+  startsAt: true,
+  endsAt: true,
+  status: true,
+  createdVia: true,
+  totalPriceCents: true,
+  depositAmountCents: true,
+  depositPaid: true,
+  notes: true,
+  canceledAt: true,
+  cancellationReason: true,
+  recurrenceGroupId: true,
+  rescheduledFromId: true,
+  employeeId: true,
+  createdAt: true,
+  updatedAt: true,
+  branch: { select: { id: true, name: true } },
+  employee: {
+    select: {
+      id: true,
+      user: { select: { firstName: true, lastName: true } },
+    },
+  },
+  customer: {
+    select: { id: true, firstName: true, lastName: true, phone: true },
+  },
+  rescheduledTo: { select: { id: true } },
+  services: {
+    select: {
+      serviceId: true,
+      durationMinutes: true,
+      priceCents: true,
+      service: { select: { name: true } },
+    },
+    orderBy: { createdAt: 'asc' },
+  },
+  resources: {
+    select: { resourceId: true, resource: { select: { name: true } } },
+    orderBy: { createdAt: 'asc' },
+  },
+} satisfies Prisma.AppointmentSelect;
+
+type AppointmentRow = Prisma.AppointmentGetPayload<{
+  select: typeof APPOINTMENT_SELECT;
+}>;
+
+/** El servicio tal como se lo copia al turno. */
+interface ServiceSnapshot {
+  id: string;
+  name: string;
+  durationMinutes: number;
+  bufferAfterMinutes: number;
+  priceCents: number;
+  depositAmountCents: number | null;
+}
+
+/**
+ * Lo mínimo que necesita `syncResourceMirror` de un cliente de Prisma.
+ *
+ * Se tipea estructuralmente para que funcione igual con el cliente normal y con
+ * el de una transacción, sin tener que importar el tipo del cliente extendido
+ * (que con las extensions no es el `Prisma.TransactionClient` de siempre).
+ */
+interface MirrorWriter {
+  appointmentResource: {
+    updateMany(args: {
+      where: { appointmentId: string };
+      data: { startsAt: Date; endsAt: Date; blocksSlot: boolean };
+    }): Promise<unknown>;
+    createMany(args: {
+      data: Prisma.AppointmentResourceUncheckedCreateInput[];
+    }): Promise<unknown>;
+  };
+}
 
 /** Una ventana de atención en hora de pared, antes de volverse instantes. */
 interface WallClockWindow {
@@ -113,7 +218,7 @@ export class AppointmentsService {
       this.timeOffByEmployee(employeeIds, query.branchId, dayStart, dayEnd),
       this.appointmentsByEmployee(employeeIds, dayStart, dayEnd),
       this.resourceBusyIntervals(
-        query.serviceId,
+        [query.serviceId],
         query.branchId,
         dayStart,
         dayEnd,
@@ -157,6 +262,656 @@ export class AppointmentsService {
     );
 
     return { ...base, branchClosed: false, slots };
+  }
+
+  /**
+   * Agenda un turno.
+   *
+   * El orden importa: primero se valida todo lo que se puede saber leyendo
+   * (que el profesional preste ese servicio ahí, que el hueco esté libre) y
+   * recién después se escribe. Pero **la validación previa no es la que
+   * garantiza que no haya doble-booking**: dos requests simultáneas al mismo
+   * slot la pasan las dos, porque en el momento de mirar todavía no hay nada
+   * que las moleste. Lo que desempata es el EXCLUDE constraint de Postgres, y
+   * por eso el `catch` de abajo no es un detalle: es el mecanismo.
+   *
+   * (Correr la validación adentro de la transacción tampoco cambiaría eso:
+   * en READ COMMITTED cada consulta ve su propio snapshot. Se hace afuera, que
+   * es más simple y no promete una protección que no da.)
+   */
+  async create(
+    dto: CreateAppointmentDto,
+    createdByUserId: string,
+  ): Promise<AppointmentResponseDto> {
+    const timezone = await this.tenantTimezone();
+    const services = await this.loadServices(dto.serviceIds);
+    const totals = totalsOf(services);
+
+    const startsAt = new Date(dto.startsAt);
+    const endsAt = addMinutes(startsAt, totals.minutes);
+
+    await this.assertEmployeeCanPerform(
+      dto.employeeId,
+      dto.branchId,
+      dto.serviceIds,
+    );
+    await this.assertCustomerExists(dto.customerId);
+    await this.assertSlotIsFree({
+      employeeId: dto.employeeId,
+      branchId: dto.branchId,
+      serviceIds: dto.serviceIds,
+      startsAt,
+      endsAt,
+      timezone,
+    });
+
+    const status = await this.initialStatus(totals.depositCents);
+    const resourceIds = await this.requiredResourceIds(
+      dto.serviceIds,
+      dto.branchId,
+    );
+
+    try {
+      const id = await this.prisma.scoped.$transaction(async (tx) => {
+        const appointment = await tx.appointment.create({
+          data: scopedCreate<Prisma.AppointmentUncheckedCreateInput>({
+            branchId: dto.branchId,
+            employeeId: dto.employeeId,
+            customerId: dto.customerId,
+            startsAt,
+            endsAt,
+            status,
+            totalPriceCents: totals.priceCents,
+            depositAmountCents: totals.depositCents,
+            notes: dto.notes ?? null,
+            createdByUserId,
+            createdVia: AppointmentSource.ADMIN,
+          }),
+          select: { id: true },
+        });
+
+        await tx.appointmentService.createMany({
+          data: services.map((service) =>
+            scopedCreate<Prisma.AppointmentServiceUncheckedCreateInput>({
+              appointmentId: appointment.id,
+              serviceId: service.id,
+              durationMinutes: service.durationMinutes,
+              priceCents: service.priceCents,
+            }),
+          ),
+        });
+
+        await this.createResourceRows(tx, appointment.id, resourceIds, {
+          startsAt,
+          endsAt,
+        });
+
+        return appointment.id;
+      });
+
+      return await this.findOne(id);
+    } catch (error) {
+      throw scheduleConflictOr(error);
+    }
+  }
+
+  /**
+   * La agenda de un rango de fechas. Es un rango y no páginas porque quien lo
+   * consume es un calendario: se pide "esta semana", no "página 3".
+   */
+  async findAll(
+    query: ListAppointmentsQueryDto,
+  ): Promise<AppointmentResponseDto[]> {
+    const timezone = await this.tenantTimezone();
+    const days = daysBetween(query.from, query.to);
+
+    if (days < 0) {
+      throw new BadRequestException('`from` no puede ser posterior a `to`');
+    }
+
+    if (days > MAX_RANGE_DAYS) {
+      throw new BadRequestException(
+        `El rango no puede pasar de ${MAX_RANGE_DAYS} días`,
+      );
+    }
+
+    const rows = await this.prisma.scoped.appointment.findMany({
+      where: {
+        ...pickDefined({
+          branchId: query.branchId,
+          employeeId: query.employeeId,
+          customerId: query.customerId,
+        }),
+        ...(query.status === undefined ? {} : { status: { in: query.status } }),
+        ...overlapping(
+          zonedWallTimeToUtc(query.from, 0, timezone),
+          zonedWallTimeToUtc(query.to, MINUTES_PER_DAY, timezone),
+        ),
+      },
+      select: APPOINTMENT_SELECT,
+      orderBy: [{ startsAt: 'asc' }],
+    });
+
+    return rows.map(toAppointmentResponse);
+  }
+
+  async findOne(id: string): Promise<AppointmentResponseDto> {
+    return toAppointmentResponse(await this.findAppointmentOrFail(id));
+  }
+
+  /** Lo único editable sin mover nada: las notas. */
+  async update(
+    id: string,
+    dto: UpdateAppointmentDto,
+  ): Promise<AppointmentResponseDto> {
+    const current = await this.findAppointmentOrFail(id);
+
+    if (dto.notes === undefined) {
+      return toAppointmentResponse(current);
+    }
+
+    const updated = await this.prisma.scoped.appointment.update({
+      where: { id, deletedAt: null },
+      data: { notes: dto.notes },
+      select: APPOINTMENT_SELECT,
+    });
+
+    return toAppointmentResponse(updated);
+  }
+
+  /**
+   * Mueve el turno por la máquina de estados.
+   *
+   * Cancelar hace tres cosas además de cambiar el estado: sella `canceledAt`
+   * (hay un CHECK en la base que exige que vayan juntos), libera los recursos
+   * que tenía tomados y calcula qué devolución corresponde.
+   */
+  async changeStatus(
+    id: string,
+    dto: ChangeAppointmentStatusDto,
+  ): Promise<ChangeStatusResultDto> {
+    const current = await this.findAppointmentOrFail(id);
+
+    if (!canTransition(current.status, dto.status)) {
+      const posibles = allowedTransitions(current.status);
+
+      throw new ConflictException(
+        `Un turno en ${current.status} no puede pasar a ${dto.status}. ` +
+          (posibles.length === 0
+            ? 'Ese estado es final.'
+            : `Solo puede pasar a: ${posibles.join(', ')}.`),
+      );
+    }
+
+    const canceling = isCanceled(dto.status);
+    const canceledAt = canceling ? new Date() : null;
+
+    const refund = canceling
+      ? resolveRefund(await this.cancellationPolicy(), current, canceledAt!)
+      : null;
+
+    const updated = await this.prisma.scoped.$transaction(async (tx) => {
+      const appointment = await tx.appointment.update({
+        where: { id, deletedAt: null },
+        data: {
+          status: dto.status,
+          canceledAt,
+          cancellationReason: canceling
+            ? (dto.cancellationReason ?? null)
+            : null,
+        },
+        select: APPOINTMENT_SELECT,
+      });
+
+      await this.syncResourceMirror(tx, appointment);
+
+      return appointment;
+    });
+
+    return { appointment: toAppointmentResponse(updated), refund };
+  }
+
+  /**
+   * Mueve un turno de horario creando uno nuevo.
+   *
+   * No se edita el original a propósito: el turno viejo queda en
+   * `rescheduled`, apuntado por el nuevo, y así el historial dice qué pasó.
+   * Editar el horario en su lugar borraría el rastro de que hubo un cambio.
+   *
+   * **Los servicios se copian con el precio y la duración que tenían.** Si el
+   * negocio subió el precio en el medio, el turno reprogramado sigue valiendo
+   * lo que valía cuando se reservó: la clienta ya lo había acordado.
+   */
+  async reschedule(
+    id: string,
+    dto: RescheduleAppointmentDto,
+    createdByUserId: string,
+  ): Promise<AppointmentResponseDto> {
+    const current = await this.findAppointmentOrFail(id);
+
+    if (isTerminal(current.status)) {
+      throw new ConflictException(
+        `Un turno en ${current.status} ya está cerrado: no se puede reprogramar`,
+      );
+    }
+
+    const timezone = await this.tenantTimezone();
+    const employeeId = dto.employeeId ?? current.employeeId;
+    const serviceIds = current.services.map((row) => row.serviceId);
+    const minutes = current.services.reduce(
+      (total, row) => total + row.durationMinutes,
+      0,
+    );
+
+    const startsAt = new Date(dto.startsAt);
+    const endsAt = addMinutes(startsAt, minutes);
+
+    if (dto.employeeId !== undefined) {
+      await this.assertEmployeeCanPerform(
+        employeeId,
+        current.branch.id,
+        serviceIds,
+      );
+    }
+
+    // El turno viejo no se cuenta como ocupado: es justo el que se está moviendo.
+    await this.assertSlotIsFree({
+      employeeId,
+      branchId: current.branch.id,
+      serviceIds,
+      startsAt,
+      endsAt,
+      timezone,
+      excludeAppointmentId: id,
+    });
+
+    const resourceIds = await this.requiredResourceIds(
+      serviceIds,
+      current.branch.id,
+    );
+
+    try {
+      const nuevoId = await this.prisma.scoped.$transaction(async (tx) => {
+        const viejo = await tx.appointment.update({
+          where: { id, deletedAt: null },
+          data: {
+            status: AppointmentStatus.RESCHEDULED,
+            cancellationReason: dto.reason ?? null,
+          },
+          select: { id: true, startsAt: true, endsAt: true, status: true },
+        });
+
+        await this.syncResourceMirror(tx, viejo);
+
+        const nuevo = await tx.appointment.create({
+          data: scopedCreate<Prisma.AppointmentUncheckedCreateInput>({
+            branchId: current.branch.id,
+            employeeId,
+            customerId: current.customer.id,
+            startsAt,
+            endsAt,
+            status: current.status,
+            totalPriceCents: current.totalPriceCents,
+            depositAmountCents: current.depositAmountCents,
+            depositPaid: current.depositPaid,
+            notes: current.notes,
+            createdByUserId,
+            createdVia: current.createdVia,
+            recurrenceGroupId: current.recurrenceGroupId,
+            rescheduledFromId: id,
+          }),
+          select: { id: true },
+        });
+
+        await tx.appointmentService.createMany({
+          data: current.services.map((row) =>
+            scopedCreate<Prisma.AppointmentServiceUncheckedCreateInput>({
+              appointmentId: nuevo.id,
+              serviceId: row.serviceId,
+              durationMinutes: row.durationMinutes,
+              priceCents: row.priceCents,
+            }),
+          ),
+        });
+
+        await this.createResourceRows(tx, nuevo.id, resourceIds, {
+          startsAt,
+          endsAt,
+        });
+
+        return nuevo.id;
+      });
+
+      return await this.findOne(nuevoId);
+    } catch (error) {
+      throw scheduleConflictOr(error);
+    }
+  }
+
+  /**
+   * Que el hueco pedido entre en el tiempo libre del profesional.
+   *
+   * Se pide **contención**, no que coincida con un slot de la grilla: el
+   * mostrador tiene que poder agendar a las 09:07 para alguien que llegó sin
+   * turno. La grilla de `GET /availability` es una sugerencia para elegir, no
+   * una restricción.
+   */
+  private async assertSlotIsFree(params: {
+    employeeId: string;
+    branchId: string;
+    serviceIds: string[];
+    startsAt: Date;
+    endsAt: Date;
+    timezone: string;
+    excludeAppointmentId?: string;
+  }): Promise<void> {
+    const date = zonedDateOnly(params.startsAt, params.timezone);
+    const free = await this.freeIntervalsFor({ ...params, date });
+
+    const entra = free.some(
+      (hueco) =>
+        hueco.start.getTime() <= params.startsAt.getTime() &&
+        params.endsAt.getTime() <= hueco.end.getTime(),
+    );
+
+    if (entra) {
+      return;
+    }
+
+    throw new ConflictException(
+      free.length === 0
+        ? 'Ese profesional no atiende ese día en esa sucursal'
+        : 'Ese horario no está libre: se pisa con otro turno, con una ausencia, ' +
+            'con un recurso ocupado, o queda fuera del horario de atención',
+    );
+  }
+
+  /** El tiempo libre de UN profesional un día, con la misma cuenta de siempre. */
+  private async freeIntervalsFor(params: {
+    employeeId: string;
+    branchId: string;
+    serviceIds: string[];
+    date: string;
+    timezone: string;
+    excludeAppointmentId?: string;
+  }): Promise<Interval[]> {
+    const branchWindow = await this.branchWindow(
+      params.branchId,
+      params.date,
+      params.timezone,
+    );
+
+    if (!branchWindow) {
+      return [];
+    }
+
+    const dayStart = zonedWallTimeToUtc(params.date, 0, params.timezone);
+    const dayEnd = zonedWallTimeToUtc(
+      params.date,
+      MINUTES_PER_DAY,
+      params.timezone,
+    );
+    const soloEl = [params.employeeId];
+
+    const [schedules, timeOff, appointments, resourceBusy] = await Promise.all([
+      this.schedulesByEmployee(
+        soloEl,
+        params.branchId,
+        params.date,
+        params.timezone,
+      ),
+      this.timeOffByEmployee(soloEl, params.branchId, dayStart, dayEnd),
+      this.appointmentsByEmployee(
+        soloEl,
+        dayStart,
+        dayEnd,
+        params.excludeAppointmentId,
+      ),
+      this.resourceBusyIntervals(
+        params.serviceIds,
+        params.branchId,
+        dayStart,
+        dayEnd,
+        params.excludeAppointmentId,
+      ),
+    ]);
+
+    const working = intersectIntervals(
+      [toInterval(branchWindow, params.date, params.timezone)],
+      schedules.get(params.employeeId) ?? [],
+    );
+
+    return subtractIntervals(working, [
+      ...(timeOff.get(params.employeeId) ?? []),
+      ...(appointments.get(params.employeeId) ?? []),
+      ...resourceBusy,
+    ]);
+  }
+
+  /**
+   * Los servicios del turno, validados: que existan, que sean de este negocio y
+   * que estén activos.
+   */
+  private async loadServices(serviceIds: string[]): Promise<ServiceSnapshot[]> {
+    if (new Set(serviceIds).size !== serviceIds.length) {
+      throw new BadRequestException('Hay servicios repetidos en el turno');
+    }
+
+    const services = await this.prisma.scoped.service.findMany({
+      where: { id: { in: serviceIds } },
+      select: {
+        id: true,
+        name: true,
+        durationMinutes: true,
+        bufferAfterMinutes: true,
+        priceCents: true,
+        depositAmountCents: true,
+        isActive: true,
+      },
+    });
+
+    const encontrados = new Set(services.map((service) => service.id));
+    const faltan = serviceIds.filter((id) => !encontrados.has(id));
+
+    if (faltan.length > 0) {
+      throw new BadRequestException(
+        `Estos servicios no existen en tu negocio: ${faltan.join(', ')}`,
+      );
+    }
+
+    const inactivos = services.filter((service) => !service.isActive);
+
+    if (inactivos.length > 0) {
+      throw new BadRequestException(
+        'Estos servicios están desactivados y no se pueden reservar: ' +
+          inactivos.map((service) => service.name).join(', '),
+      );
+    }
+
+    // El orden del pedido manda: los servicios se hacen en ese orden.
+    return serviceIds.map(
+      (id) => services.find((service) => service.id === id)!,
+    );
+  }
+
+  /**
+   * Que el profesional preste **cada** servicio **en esa sucursal**. Es la regla
+   * que la Fase 3 dejó escrita en `employee_services`: sin esto se podrían
+   * agendar turnos que nadie puede atender.
+   */
+  private async assertEmployeeCanPerform(
+    employeeId: string,
+    branchId: string,
+    serviceIds: string[],
+  ): Promise<void> {
+    const asignados = await this.prisma.scoped.employeeService.findMany({
+      where: { employeeId, branchId, serviceId: { in: serviceIds } },
+      select: { serviceId: true },
+    });
+
+    const puede = new Set(asignados.map((row) => row.serviceId));
+    const noPuede = serviceIds.filter((id) => !puede.has(id));
+
+    if (noPuede.length > 0) {
+      throw new BadRequestException(
+        'Ese profesional no presta estos servicios en esa sucursal: ' +
+          noPuede.join(', '),
+      );
+    }
+  }
+
+  private async assertCustomerExists(customerId: string): Promise<void> {
+    const customer = await this.prisma.scoped.customer.findFirst({
+      where: { id: customerId },
+      select: { id: true },
+    });
+
+    if (!customer) {
+      throw new BadRequestException('El cliente no existe en tu negocio');
+    }
+  }
+
+  /**
+   * Los recursos que el turno va a ocupar: los que requieren sus servicios y
+   * están en esa sucursal. Mismo criterio que la disponibilidad.
+   */
+  private async requiredResourceIds(
+    serviceIds: string[],
+    branchId: string,
+  ): Promise<string[]> {
+    const required = await this.prisma.scoped.serviceResource.findMany({
+      where: {
+        serviceId: { in: serviceIds },
+        resource: { branchId, isActive: true, deletedAt: null },
+      },
+      select: { resourceId: true },
+    });
+
+    return [...new Set(required.map((row) => row.resourceId))];
+  }
+
+  /**
+   * Con qué estado nace el turno.
+   *
+   * `requireDepositForBooking` es lo que decide: con la bandera prendida el
+   * turno queda esperando el pago de la seña; apagada, se confirma de una y la
+   * seña (si la hay) se cobra cuando se cobra. Sin monto que cobrar no hay nada
+   * que esperar, así que ahí siempre se confirma.
+   */
+  private async initialStatus(
+    depositCents: number | null,
+  ): Promise<AppointmentStatus> {
+    if (depositCents === null || depositCents <= 0) {
+      return AppointmentStatus.CONFIRMED;
+    }
+
+    const settings = await this.tenantSettings();
+
+    return settings.requireDepositForBooking
+      ? AppointmentStatus.PENDING_PAYMENT
+      : AppointmentStatus.CONFIRMED;
+  }
+
+  private async cancellationPolicy(): Promise<CancellationPolicy> {
+    const settings = await this.tenantSettings();
+
+    return {
+      cancellationPolicyHours: settings.cancellationPolicyHours,
+      cancellationRefundType: settings.cancellationRefundType,
+      cancellationRefundPercentage: settings.cancellationRefundPercentage,
+    };
+  }
+
+  private async tenantSettings(): Promise<{
+    requireDepositForBooking: boolean;
+    cancellationPolicyHours: number;
+    cancellationRefundType: CancellationRefundType;
+    cancellationRefundPercentage: number | null;
+  }> {
+    const tenantId = this.tenantContext.getTenantId();
+
+    if (!tenantId) {
+      throw new TenantContextMissingError('Tenant', 'read settings');
+    }
+
+    const settings = await this.prisma.scoped.tenantSettings.findFirst({
+      where: { tenantId },
+      select: {
+        requireDepositForBooking: true,
+        cancellationPolicyHours: true,
+        cancellationRefundType: true,
+        cancellationRefundPercentage: true,
+      },
+    });
+
+    if (!settings) {
+      throw new NotFoundException('El negocio no tiene configuración cargada');
+    }
+
+    return settings;
+  }
+
+  private async createResourceRows(
+    tx: MirrorWriter,
+    appointmentId: string,
+    resourceIds: string[],
+    window: { startsAt: Date; endsAt: Date },
+  ): Promise<void> {
+    if (resourceIds.length === 0) {
+      return;
+    }
+
+    await tx.appointmentResource.createMany({
+      data: resourceIds.map((resourceId) =>
+        scopedCreate<Prisma.AppointmentResourceUncheckedCreateInput>({
+          appointmentId,
+          resourceId,
+          startsAt: window.startsAt,
+          endsAt: window.endsAt,
+        }),
+      ),
+    });
+  }
+
+  /**
+   * **El único lugar que escribe la copia de `appointment_resources`.**
+   *
+   * Esas tres columnas (`starts_at`, `ends_at`, `blocks_slot`) son un espejo de
+   * las del turno, y existen solo porque un EXCLUDE constraint no puede leer
+   * otra tabla. Si se desincronizan, la base deja pasar un doble-booking de
+   * recursos sin decir nada — por eso toda escritura pasa por acá y no se
+   * repite el `updateMany` en cada método.
+   */
+  private async syncResourceMirror(
+    tx: MirrorWriter,
+    appointment: {
+      id: string;
+      startsAt: Date;
+      endsAt: Date;
+      status: AppointmentStatus;
+    },
+  ): Promise<void> {
+    await tx.appointmentResource.updateMany({
+      where: { appointmentId: appointment.id },
+      data: {
+        startsAt: appointment.startsAt,
+        endsAt: appointment.endsAt,
+        blocksSlot: BLOCKING_STATUSES.includes(appointment.status),
+      },
+    });
+  }
+
+  private async findAppointmentOrFail(id: string): Promise<AppointmentRow> {
+    const appointment = await this.prisma.scoped.appointment.findFirst({
+      where: { id },
+      select: APPOINTMENT_SELECT,
+    });
+
+    if (!appointment) {
+      throw new NotFoundException('El turno no existe');
+    }
+
+    return appointment;
   }
 
   /**
@@ -288,11 +1043,15 @@ export class AppointmentsService {
     employeeIds: string[],
     dayStart: Date,
     dayEnd: Date,
+    excludeAppointmentId?: string,
   ): Promise<Map<string, Interval[]>> {
     const appointments = await this.prisma.scoped.appointment.findMany({
       where: {
         employeeId: { in: employeeIds },
         status: { in: [...BLOCKING_STATUSES] },
+        ...(excludeAppointmentId === undefined
+          ? {}
+          : { id: { not: excludeAppointmentId } }),
         ...overlapping(dayStart, dayEnd),
       },
       select: { employeeId: true, startsAt: true, endsAt: true },
@@ -318,14 +1077,15 @@ export class AppointmentsService {
    * restricción: la lista vuelve vacía.
    */
   private async resourceBusyIntervals(
-    serviceId: string,
+    serviceIds: string[],
     branchId: string,
     dayStart: Date,
     dayEnd: Date,
+    excludeAppointmentId?: string,
   ): Promise<Interval[]> {
     const required = await this.prisma.scoped.serviceResource.findMany({
       where: {
-        serviceId,
+        serviceId: { in: serviceIds },
         resource: { branchId, isActive: true, deletedAt: null },
       },
       select: { resourceId: true },
@@ -339,6 +1099,9 @@ export class AppointmentsService {
       where: {
         resourceId: { in: required.map((row) => row.resourceId) },
         blocksSlot: true,
+        ...(excludeAppointmentId === undefined
+          ? {}
+          : { appointmentId: { not: excludeAppointmentId } }),
         ...overlapping(dayStart, dayEnd),
       },
       select: { startsAt: true, endsAt: true },
@@ -449,4 +1212,121 @@ function groupBy<T, V>(
   }
 
   return grouped;
+}
+
+function toAppointmentResponse(row: AppointmentRow): AppointmentResponseDto {
+  return {
+    id: row.id,
+    branch: row.branch,
+    employee: {
+      id: row.employee.id,
+      name: `${row.employee.user.firstName} ${row.employee.user.lastName}`,
+    },
+    customer: row.customer,
+    startsAt: row.startsAt,
+    endsAt: row.endsAt,
+    status: row.status,
+    createdVia: row.createdVia,
+    totalPriceCents: row.totalPriceCents,
+    depositAmountCents: row.depositAmountCents,
+    depositPaid: row.depositPaid,
+    notes: row.notes,
+    services: row.services.map((service) => ({
+      serviceId: service.serviceId,
+      name: service.service.name,
+      durationMinutes: service.durationMinutes,
+      priceCents: service.priceCents,
+    })),
+    resources: row.resources.map((resource) => ({
+      resourceId: resource.resourceId,
+      name: resource.resource.name,
+    })),
+    rescheduledFromId: row.rescheduledFromId,
+    rescheduledToId: row.rescheduledTo?.id ?? null,
+    canceledAt: row.canceledAt,
+    cancellationReason: row.cancellationReason,
+    recurrenceGroupId: row.recurrenceGroupId,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+/**
+ * Cuánto dura, cuánto sale y cuánta seña pide el turno entero.
+ *
+ * La duración incluye los buffers: si alguien se hace corte y color seguido, el
+ * profesional queda ocupado la suma de las dos cosas más sus dos limpiezas.
+ * La seña es `null` cuando ningún servicio pide seña, no cero: son cosas
+ * distintas y el CHECK de la base distingue.
+ */
+function totalsOf(services: ServiceSnapshot[]): {
+  minutes: number;
+  priceCents: number;
+  depositCents: number | null;
+} {
+  const deposits = services
+    .map((service) => service.depositAmountCents)
+    .filter((amount): amount is number => amount !== null);
+
+  return {
+    minutes: services.reduce(
+      (total, service) =>
+        total + service.durationMinutes + service.bufferAfterMinutes,
+      0,
+    ),
+    priceCents: services.reduce(
+      (total, service) => total + service.priceCents,
+      0,
+    ),
+    depositCents:
+      deposits.length === 0
+        ? null
+        : deposits.reduce((total, amount) => total + amount, 0),
+  };
+}
+
+function addMinutes(instant: Date, minutes: number): Date {
+  return new Date(instant.getTime() + minutes * 60_000);
+}
+
+/** Días de diferencia entre dos fechas de calendario. */
+function daysBetween(from: string, to: string): number {
+  const parse = (value: string): number => {
+    const [year, month, day] = value.split('-').map(Number);
+
+    return Date.UTC(year, month - 1, day);
+  };
+
+  return (parse(to) - parse(from)) / 86_400_000;
+}
+
+/**
+ * Traduce el choque contra un EXCLUDE constraint al 409 que corresponde.
+ *
+ * Es el único camino por el que se detecta un doble-booking real (dos requests
+ * simultáneas), así que el mensaje tiene que decir **qué** se pisó: si fue la
+ * agenda del profesional o un recurso que ya estaba tomado. Cualquier otro
+ * error pasa de largo sin tocarse.
+ */
+function scheduleConflictOr(error: unknown): unknown {
+  const constraint = exclusionViolationConstraint(error);
+
+  if (constraint === null) {
+    return error;
+  }
+
+  return new ConflictException(
+    constraint === 'appointment_resources_no_overlap'
+      ? 'Alguien tomó ese horario primero: el recurso que necesita este ' +
+          'servicio ya está reservado'
+      : 'Alguien tomó ese horario primero: el profesional ya tiene otro turno ' +
+          'que se pisa con este',
+  );
+}
+
+/** Deja solo las claves que vinieron (`undefined` = "no filtrar por esto"). */
+function pickDefined<T extends object>(values: Record<string, unknown>): T {
+  return Object.fromEntries(
+    Object.entries(values).filter(([, value]) => value !== undefined),
+  ) as T;
 }
