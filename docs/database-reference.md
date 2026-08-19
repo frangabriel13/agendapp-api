@@ -526,6 +526,28 @@ Etiquetas para segmentar clientes.
 
 ## 📅 8. Turnos
 
+> **Estado: implementado (Fase 5).** Migración `20260819175745_appointments`.
+> Lo construido cambia sobre este modelo conceptual:
+>
+> - **`appointment_resources` lleva `starts_at`, `ends_at` y `blocks_slot`**:
+>   copia de las del turno. Están ahí porque un EXCLUDE constraint no puede
+>   leer otra tabla — Postgres no admite subqueries en un índice — y sin la
+>   copia no hay forma de impedir a nivel base que dos turnos solapados reserven
+>   la misma sala. Las escribe un único método
+>   (`AppointmentsService.syncResourceMirror`).
+> - **`rescheduled_to_id` no existe como columna.** Solo está
+>   `rescheduled_from_id`, y el sentido inverso es la relación de vuelta:
+>   guardar los dos punteros deja abierta la posibilidad de que se contradigan.
+>   La API expone los dos igual.
+> - `appointment_services` y `appointment_resources` llevan `tenant_id`
+>   (convención transversal) y están exentas de soft delete.
+> - `appointments` lleva además `created_via` y `deleted_at`.
+> - CHECK: `ends_at > starts_at`, precio ≥ 0, seña entre 0 y el total, y
+>   coherencia entre `status` cancelado y `canceled_at` (van juntos o no van).
+> - `recurrence_groups`: `day_of_week` entre 0 y 6, `occurrences` entre 1 y 52.
+>   `occurrences` guarda **los turnos que existen**, no los que se pidieron: una
+>   serie cuyas fechas ocupadas se saltearon queda con el número real.
+
 ### `appointments`
 Turnos (corazón del sistema).
 
@@ -573,6 +595,8 @@ Turnos (corazón del sistema).
 - `CHECK(ends_at > starts_at)`
 - `EXCLUSION CONSTRAINT` sobre `(employee_id, tstzrange(starts_at, ends_at))` para prevenir doble-booking del empleado.
 
+> Implementado con `WHERE status NOT IN ('canceled_by_customer', 'canceled_by_business', 'rescheduled') AND deleted_at IS NULL`: cancelar libera la agenda. Esa lista tiene que decir lo mismo que `NON_BLOCKING_STATUSES` en `src/modules/appointments/availability.ts`.
+
 ### `appointment_services`
 Servicios incluidos en un turno (puede ser más de uno con el mismo profesional).
 
@@ -598,6 +622,8 @@ Recursos reservados para el turno.
 **Constraints:**
 - `UNIQUE(appointment_id, resource_id)`
 - `EXCLUSION CONSTRAINT` para prevenir que un mismo recurso esté en dos turnos solapados.
+
+> Implementado sobre las columnas desnormalizadas: `EXCLUDE USING gist (resource_id WITH =, tstzrange(starts_at, ends_at) WITH &&) WHERE (blocks_slot)`. Ver la nota de estado arriba.
 
 ### `recurrence_groups`
 Define una regla de recurrencia (los turnos se generan individualmente).

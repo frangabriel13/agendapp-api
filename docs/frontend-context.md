@@ -41,8 +41,8 @@ rompe algo, aparece como error de compilación en vez de como bug en runtime.
 
 `npm run seed:demo` crea el tenant **Peluquería Demo** (slug `peluqueria-demo`,
 plan `avanzado`) con 2 sucursales con horario, 1 feriado, 3 empleados, un
-catálogo cargado (2 categorías, 2 servicios, 2 recursos) y 3 clientas con 2
-etiquetas:
+catálogo cargado (2 categorías, 2 servicios, 2 recursos), 3 clientas con 2
+etiquetas y 4 turnos en la semana que viene:
 
 | Email | Rol | Estado |
 |---|---|---|
@@ -56,6 +56,11 @@ la empleada pendiente, útil para probar esa pantalla.
 Los teléfonos de las tres clientas están escritos de tres formas distintas a
 propósito (`+54 9 11 4123-5566`, `(011) 4777-8899`, `11 5030-2211`): es lo que
 pasa en la vida real y sirve para probar que la búsqueda los encuentra igual.
+
+Los turnos se ubican **relativos a hoy** (el próximo lunes y miércoles, que es
+cuando Lucía atiende en Centro), así la agenda siempre tiene algo aunque el seed
+se corra en otra fecha. Hay uno esperando seña y uno cancelado, para ver los dos
+estados en pantalla.
 
 El seed es idempotente: borra el tenant demo anterior antes de recrearlo.
 
@@ -275,7 +280,7 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 
 ## Qué existe hoy y qué no
 
-**Disponible — 68 endpoints:**
+**Disponible — 76 endpoints:**
 
 | Área | Endpoints | Alcanza para |
 |---|---|---|
@@ -288,12 +293,13 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 | `/resources` | 5 | CRUD de camillas, salas y sillones por sucursal |
 | `/customers` | 7 | CRUD de clientes, búsqueda paginada, etiquetas de cada uno |
 | `/customer-tags` | 5 | CRUD de etiquetas ("VIP", "Debe seña") |
+| `/appointments` | 8 | Disponibilidad, agendar, agenda por rango, estados, reprogramar, series |
 | `/health` | 1 | Healthcheck |
 
 **Todavía no existe:**
 
-- **Turnos, disponibilidad y calendario** (Fase 5)
-- Pagos (Fase 6) y portal público de reservas (Fase 7)
+- Pagos y cobro de señas (Fase 6)
+- Portal público de reservas (Fase 7)
 
 No conviene diseñar contra estos: el contrato todavía no está definido y va a
 cambiar.
@@ -387,6 +393,114 @@ puede ser futura. `PUT /customers/:id/tags` reemplaza el set completo (`[]` las
 saca todas). Cada etiqueta trae `customerCount`, útil para avisar antes de
 borrarla; dar de baja una etiqueta la saca de todos los clientes. Dar de baja un
 cliente **libera su teléfono** para una ficha nueva.
+
+### Detalle sobre los turnos (Fase 5)
+
+Es la parte más grande de la API y la que reemplaza el mock de la agenda.
+
+**Primero mirar los huecos libres.**
+`GET /appointments/availability?branchId=&serviceId=&date=YYYY-MM-DD` devuelve
+los slots reservables de ese día. Ya tiene restado todo: horario del local,
+horario del profesional, ausencias, turnos tomados y recursos ocupados.
+
+```jsonc
+{
+  "date": "2026-09-07",
+  "timezone": "America/Argentina/Buenos_Aires",
+  "durationMinutes": 45,
+  "bufferAfterMinutes": 10,
+  "branchClosed": false,
+  "slots": [
+    {
+      "startsAt": "2026-09-07T12:00:00.000Z",
+      "endsAt": "2026-09-07T12:55:00.000Z",
+      "employees": [{ "employeeId": "...", "employeeName": "Lucía Fernández" }]
+    }
+  ]
+}
+```
+
+Cuatro cosas que evitan sorpresas:
+
+1. **Los slots duran `duración + buffer`.** El buffer es tiempo en el que el
+   profesional sigue ocupado, así que forma parte de lo que el turno reserva. La
+   consecuencia visible es que el último turno del día **termina antes del
+   cierre**, no justo al cierre. No es un bug.
+2. **Sin `employeeId` responden todos los que prestan ese servicio ahí**, y cada
+   slot dice quiénes lo tienen libre. Con `employeeId` se filtra a uno.
+3. **`branchClosed` distingue "cerrado" de "sin lugar".** Los dos casos
+   devuelven `slots: []`, pero el cartel que corresponde es distinto.
+4. **No recorta los slots que ya pasaron.** Describe lo que el horario permite,
+   no lo que todavía se puede reservar. Una pantalla de reserva tiene que
+   filtrar por `startsAt > ahora`.
+
+**Agendar no obliga a usar un slot de esa lista.**
+`POST /appointments` acepta cualquier `startsAt` que **entre** en el tiempo libre
+del profesional. O sea que se puede cargar un turno a las 09:07 para alguien que
+llegó sin turno. El `endsAt` lo calcula el servidor sumando duración y buffer de
+cada servicio: no hay que mandarlo.
+
+**El precio y la duración se congelan.** `appointment.services[]` guarda lo que
+el servicio valía y duraba **cuando se reservó**. Si el negocio cambia la lista
+de precios, los turnos viejos no se mueven — para mostrar el precio de un turno,
+usar `totalPriceCents` del turno, nunca el del servicio.
+
+⚠️ **El 409 al agendar es normal, no un error de la app.** Si dos personas
+reservan el mismo hueco a la vez, una lo consigue y la otra recibe 409 con un
+mensaje que dice qué se pisó (la agenda del profesional o un recurso). Lo
+correcto es refrescar la disponibilidad y ofrecer otro horario, no reintentar.
+
+**La agenda va por rango, no paginada.**
+`GET /appointments?from=2026-09-07&to=2026-09-13` — inclusive, en días del
+calendario del negocio, hasta 92 días. Filtros opcionales: `branchId`,
+`employeeId`, `customerId`, `status` (repetible). Un turno que arranca el día
+anterior y termina dentro del rango también viene.
+
+**Los estados tienen un camino fijo.**
+`PATCH /appointments/:id/status`:
+
+| Desde | Puede pasar a |
+|---|---|
+| `PENDING_PAYMENT` | `CONFIRMED`, cancelado |
+| `CONFIRMED` | `ATTENDED`, `NO_SHOW`, cancelado |
+| el resto | nada: son finales |
+
+Una transición inválida da **409**, no 400. Al cancelar, la respuesta trae
+`refund` con qué corresponde devolver según la política del negocio — **no mueve
+plata**, eso llega con los pagos (Fase 6), pero sirve para decirle algo concreto
+a la clienta en el momento:
+
+```jsonc
+{
+  "appointment": { /* ... */ },
+  "refund": { "type": "FULL", "amountCents": 30000, "withinPolicy": true,
+              "reason": "Canceló en término: corresponde devolver la seña completa" }
+}
+```
+
+`refund` es `null` en los cambios que no son cancelación.
+
+**Reprogramar crea un turno nuevo.**
+`POST /appointments/:id/reschedule` devuelve **el turno nuevo** (201). El viejo
+queda en `RESCHEDULED` y los dos quedan enlazados por `rescheduledFromId` /
+`rescheduledToId`. No se edita el original a propósito: así el historial dice
+que hubo un cambio. Los servicios se copian con el precio que tenían.
+
+**Las series repiten hora de pared.**
+`POST /appointments/recurring` con `frequency` (`WEEKLY` / `BIWEEKLY` /
+`MONTHLY`) y `occurrences` (1 a 52, **contando el primero**). "Los lunes a las
+10" siguen siendo las 10 aunque en el medio cambie el horario de verano.
+
+⚠️ **Las fechas que no entran se saltean, no cancelan la serie.** La respuesta
+trae `created` con los que sí y `skipped` con los que no, cada uno con su
+motivo. **Hay que mostrar `skipped`**: son las fechas que alguien tiene que
+resolver a mano. Si no entró ninguna, ahí sí es 409.
+
+Detalles menores: `PATCH /appointments/:id` solo edita `notes` — mover el
+horario es reprogramar. Un turno puede tener varios servicios seguidos con el
+mismo profesional (`serviceIds`), y la duración es la suma de todos con sus
+buffers. `NO_SHOW` **ocupa la agenda igual** que un turno atendido: esa hora
+estuvo tomada.
 
 ### Detalle sobre la invitación de empleados
 

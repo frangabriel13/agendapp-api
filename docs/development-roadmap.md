@@ -8,7 +8,7 @@
 
 ## 📌 Estado actual del repo
 
-> **Fases 0 a 4 cerradas.** El próximo paso es la Fase 5 (turnos), la más delicada.
+> **Fases 0 a 5 cerradas.** El corazón del sistema ya está: turnos, disponibilidad y recurrencia. El próximo paso es la Fase 6 (pagos).
 
 **Cimientos (Fase 0)**
 
@@ -58,12 +58,24 @@
 - ✅ `CustomerTagsModule`: CRUD con `customerCount` de clientes vivos. Dar de baja una etiqueta la saca de todos los clientes.
 - ✅ Paginación compartida en `src/common/dto/pagination.dto.ts` (`{ data, meta }` por offset). La estrenan los clientes; la van a reusar el historial de turnos y el de pagos.
 - ✅ `AllExceptionsFilter` ahora deja pasar los campos extra que un service adjunte al cuerpo de un error — es lo que permite que el 409 lleve la ficha.
-- ✅ Total del repo: **274 tests unitarios + 219 e2e**.
 
-**Dos reglas que la Fase 5 va a dar por sentadas**
+**Turnos (Fase 5)**
 
-1. Un empleado solo puede prestar un servicio en una sucursal donde efectivamente trabaja (`employee_branches`). Se valida en el `PUT`, no en la base.
-2. `durationMinutes` + `bufferAfterMinutes` es lo que ocupa el turno. La disponibilidad se calcula con esos dos números.
+- ✅ Migración `20260819175745_appointments`: `Appointment`, `AppointmentService`, `AppointmentResource` y `RecurrenceGroup`, con los CHECK de rango, precio, seña y coherencia de `canceled_at`, y **dos EXCLUDE constraints** que hacen el doble-booking imposible a nivel base.
+- ✅ **`GET /appointments/availability`** — cruza el horario de la sucursal con el del profesional y resta ausencias, turnos tomados y recursos ocupados. La aritmética de intervalos vive en `src/modules/appointments/availability.ts` (funciones puras, con tests de casos borde) y la conversión de hora de pared a instante en `src/common/utils/timezone.util.ts`, con tests contra transiciones reales de horario de verano.
+- ✅ **`POST /appointments`** — congela precio y duración en `appointment_services` (snapshot), calcula el fin con duración + buffer, y decide el estado inicial según `requireDepositForBooking`. No exige coincidir con un slot de la grilla: alcanza con que entre en el tiempo libre, para poder agendar a alguien que llegó sin turno.
+- ✅ **Máquina de estados** en `status-machine.ts` (pura y testeada). Cancelar sella `canceledAt`, libera los recursos y devuelve en `refund` qué corresponde según la política del negocio — sin mover plata, que es la Fase 6.
+- ✅ **`POST /appointments/:id/reschedule`** — crea un turno nuevo y deja el viejo en `rescheduled`, enlazados. Copia los servicios con el precio que tenían.
+- ✅ **`POST /appointments/recurring`** — series semanales, quincenales y mensuales. Las fechas se generan en calendario puro (`recurrence.ts`), así una serie que cruza un cambio de hora sigue cayendo a la misma hora de pared.
+- ✅ `GET /appointments?from=&to=` para el calendario, `GET /:id`, `PATCH /:id` (solo notas).
+- ✅ Total del repo: **354 tests unitarios + 309 e2e**.
+- ❌ Todavía sin RLS (Fase 8) ni pagos (Fase 6).
+
+**Tres cosas que la Fase 6 y el portal van a dar por sentadas**
+
+1. **El doble-booking lo impide la base, no el código.** El chequeo previo de disponibilidad es para dar un mensaje lindo; quien desempata dos reservas simultáneas es el EXCLUDE constraint. Cualquier camino nuevo que inserte turnos tiene que capturar esa violación y traducirla a 409 — Prisma **no** la traduce sola (ver `src/prisma/exclusion-violation.ts`).
+2. **`appointment_resources` guarda copia de `starts_at`, `ends_at` y `blocks_slot`.** Es el espejo que el EXCLUDE de recursos necesita, porque un índice no puede leer otra tabla. Lo escribe un solo método (`AppointmentsService.syncResourceMirror`): todo cambio de horario o de estado tiene que pasar por ahí.
+3. **`NON_BLOCKING_STATUSES` y el `WHERE` de los EXCLUDE dicen lo mismo.** Si aparece un estado nuevo, van los dos lados.
 
 ---
 
@@ -76,7 +88,7 @@
 | ✅ 2 | Estructura del negocio | Sucursales y empleados |
 | ✅ 3 | Catálogo | Servicios, categorías, recursos |
 | ✅ 4 | Clientes | Customers + tags |
-| 5 | Turnos (corazón) | Appointments + disponibilidad + recurrencia |
+| ✅ 5 | Turnos (corazón) | Appointments + disponibilidad + recurrencia |
 | 6 | Pagos | Mercado Pago (señas + suscripciones) |
 | 7 | Portal público | Endpoints sin auth para reservar online |
 | 8 | Transversales finales | Notas, auditoría, RLS, jobs (BullMQ) |
@@ -448,28 +460,26 @@ número.
 
 ---
 
-## 📅 FASE 5 — Turnos (el corazón)
+## ✅ FASE 5 — Turnos (el corazón)
 
-> La más delicada. Hacela despacio, con tests primero. No avances sin cobertura de los casos borde.
+Migración `20260819175745_appointments`: `Appointment`, `AppointmentService`,
+`AppointmentResource`, `RecurrenceGroup`.
 
-### 5.1 Migración base
+### El SQL que hubo que corregir
 
-`Appointment`, `AppointmentService`, `AppointmentResource`, `RecurrenceGroup`.
+El bloque de EXCLUDE que traía este plan **no compila**: proponía leer
+`starts_at`/`ends_at` del turno con un subquery adentro del constraint, y
+Postgres no admite subqueries en la definición de un índice. De las dos salidas
+que el propio plan anticipaba se eligió **desnormalizar**:
+`appointment_resources` guarda copia de `starts_at`, `ends_at` y un
+`blocks_slot`, y el EXCLUDE va sobre esas columnas. La lógica queda en
+TypeScript, donde se testea, en vez de en un trigger invisible desde el código.
+El costo —que la copia se desincronice— se acota con un único método que la
+escribe (`syncResourceMirror`).
 
-```bash
-npx prisma migrate dev --name appointments
-```
-
-### 5.2 Editar la migración SQL a mano
-
-Prisma **no** genera constraints de exclusión. Abrir la migración recién creada y agregar:
+Lo que quedó aplicado:
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS btree_gist;
-
-ALTER TABLE appointments
-  ADD CONSTRAINT appointments_ends_after_starts CHECK (ends_at > starts_at);
-
 ALTER TABLE appointments
   ADD CONSTRAINT appointments_no_employee_overlap
   EXCLUDE USING gist (
@@ -484,72 +494,76 @@ ALTER TABLE appointment_resources
   ADD CONSTRAINT appointment_resources_no_overlap
   EXCLUDE USING gist (
     resource_id WITH =,
-    tstzrange(
-      (SELECT starts_at FROM appointments WHERE id = appointment_id),
-      (SELECT ends_at FROM appointments WHERE id = appointment_id)
-    ) WITH &&
-  );
+    tstzrange(starts_at, ends_at) WITH &&
+  ) WHERE (blocks_slot);
 ```
 
-> El exclusion en `appointment_resources` puede requerir desnormalizar `starts_at`/`ends_at` ahí, o usar un trigger. Decidir al implementar.
+> ⚠️ **Prisma no traduce las violaciones de EXCLUDE.** Un `UNIQUE` roto llega
+> como `P2002`, pero un EXCLUDE roto llega como un error crudo del driver. La
+> rama que este repo tenía preparada en `AllExceptionsFilter` nunca se
+> ejecutaba: sin `src/prisma/exclusion-violation.ts`, **todo doble-booking
+> habría salido 500 en vez de 409**.
 
-### 5.3 AppointmentsModule
+### Disponibilidad
 
-```bash
-npx nest g resource modules/appointments
+`GET /appointments/availability?branchId=&serviceId=&date=&employeeId=`
+
+La cuenta es siempre la misma y cada paso es una función pura de
+`availability.ts`:
+
+```
+(horario de la sucursal ∩ horario del empleado)
+  − ausencias − turnos que ya tiene − recursos ocupados
 ```
 
-#### 5.3.1 Endpoint de disponibilidad
+y después se corta en slots de `duración + buffer`. **Todo se convierte a
+instantes antes de operar**, con `Tenant.timezone`: mezclar hora de pared con
+`TIMESTAMPTZ` falla justo el día que cambia la hora.
 
-`GET /appointments/availability?branchId=&serviceId=&employeeId=&date=YYYY-MM-DD` → array de slots libres.
+Decisiones tomadas al implementar:
 
-Algoritmo:
+- **Los slots van pegados** (paso = duración + buffer), como pedía el plan.
+  `splitIntoSlots` recibe el paso por separado, así pasar a una grilla de 15
+  minutos es cambiar un argumento.
+- **No se filtran los slots que ya pasaron.** El endpoint describe lo que el
+  horario permite; el portal público (Fase 7) va a tener que recortarlos.
+- **Los recursos de otras sucursales no cuentan**, y si un servicio requiere
+  varios en la misma sucursal los necesita a todos. Es la intersección que la
+  Fase 3 dejó explícitamente para acá.
 
-1. Cargar horario de la sucursal para ese día (`BranchBusinessHours` + `BranchSpecialDay` que pueda sobrescribir).
-2. Cargar horario del empleado en esa sucursal (`EmployeeSchedule`).
-3. Restar `EmployeeTimeOff` que se solape.
-4. Restar `Appointment`s existentes del empleado (con estados activos).
-5. Restar uso de recursos requeridos por el servicio.
-6. Dividir el rango libre en slots del tamaño `duration + buffer`.
+### Turnos
 
-**Tests unitarios obligatorios.** Casos borde: día cerrado, día especial, time-off parcial, servicios con buffer, transiciones DST.
+- `POST /appointments` — **snapshot** de `duration_minutes` y `price_cents`.
+  Estado inicial `pending_payment` solo si hay seña que cobrar y
+  `require_deposit_for_booking` está prendido. No exige coincidir con un slot de
+  la grilla: alcanza con que entre en el tiempo libre, para poder agendar a
+  alguien que llegó sin turno.
+- `PATCH /appointments/:id/status` — máquina de estados en `status-machine.ts`.
+  Al cancelar, la respuesta trae en `refund` qué corresponde según
+  `tenant_settings`; **no mueve plata**, eso es la Fase 6.
+- `POST /appointments/:id/reschedule` — crea uno nuevo y deja el viejo en
+  `rescheduled`, enlazados. Copia los servicios **con el precio que tenían**.
+- `GET /appointments?from=&to=` — rango de fechas para el calendario, no
+  paginación: quien lo consume pide "esta semana", no "página 3".
 
-#### 5.3.2 Crear turno
+### Recurrencia
 
-`POST /appointments`:
+`POST /appointments/recurring` — semanal, quincenal o mensual.
 
-- Validar disponibilidad (re-ejecutar el algoritmo dentro de la transacción).
-- **Snapshot** de `duration_minutes` y `price_cents` en `AppointmentService` (no FK al valor actual).
-- Si el servicio tiene `deposit_amount_cents` o `tenant_settings.require_deposit_for_booking` → estado inicial `pending_payment`. Si no, `confirmed`.
-- Crear `AppointmentResource` para cada recurso requerido.
-- Si el exclusion constraint dispara (`23P01`), devolver 409 con mensaje claro.
+**Los que chocan se saltean, no tumban la serie**: vuelven en `skipped` con el
+motivo y el resto se crea igual. Rechazar los diez porque uno cae en un feriado
+obligaría al mostrador a adivinar cuál era. Consecuencia: cada turno va en su
+propia transacción, porque en Postgres el primer error aborta la transacción
+entera.
 
-#### 5.3.3 Máquina de estados
+Las fechas se generan en **calendario puro** (`recurrence.ts`): sumar días, no
+milisegundos, para que "los lunes a las 10" sigan siendo las 10 después de un
+cambio de hora. El mensual recorta al último día del mes (31 de enero → 28 de
+febrero) sin arrastrar el recorte a los meses siguientes.
 
-Transiciones permitidas (validar en service, no solo en DTO):
-
-- `pending_payment` → `confirmed` (cuando entra el webhook de pago) | `canceled_by_customer` | `canceled_by_business`
-- `confirmed` → `attended` | `no_show` | `canceled_by_customer` | `canceled_by_business` | `rescheduled`
-- `attended`, `no_show`, `canceled_*`, `rescheduled` — terminales
-
-Política de cancelación: aplicar `tenant_settings.cancellation_policy_hours` para decidir si corresponde reembolso (full/partial/credit/none).
-
-#### 5.3.4 Reprogramación
-
-`POST /appointments/:id/reschedule`:
-
-- Crea un nuevo `Appointment`, marca el viejo como `rescheduled`, setea `rescheduled_to_id` y `rescheduled_from_id`.
-- Mantiene los pagos existentes asociados.
-
-### 5.4 Recurrencia
-
-`POST /appointments/recurring`:
-
-- Recibe `frequency`, `dayOfWeek`, `occurrences`, datos del turno base.
-- Genera N turnos en una transacción, todos con el mismo `recurrence_group_id`.
-- Si alguno choca con disponibilidad → fallar todo (transacción) o saltearlo con warning (decidir y documentar).
-
-**✅ Done cuando:** podés crear, reprogramar, cancelar y marcar atendido un turno. Doble-booking imposible (testeado con concurrencia: dos requests paralelos al mismo slot, uno tiene que fallar con 409).
+**✅ Done:** se crea, reprograma, cancela y marca atendido. Doble-booking
+imposible, con test de concurrencia: dos `POST` en paralelo al mismo slot, uno
+201 y otro 409, y un solo turno en la base.
 
 ---
 

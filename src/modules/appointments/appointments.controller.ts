@@ -27,7 +27,9 @@ import {
   ChangeAppointmentStatusDto,
   ChangeStatusResultDto,
   CreateAppointmentDto,
+  CreateRecurringAppointmentsDto,
   ListAppointmentsQueryDto,
+  RecurringResultDto,
   RescheduleAppointmentDto,
   UpdateAppointmentDto,
 } from './dto/appointment.dto';
@@ -103,6 +105,35 @@ export class AppointmentsController {
     @CurrentUser() user: AuthenticatedUser,
   ): Promise<AppointmentResponseDto> {
     return this.appointmentsService.create(dto, user.userId);
+  }
+
+  /** También antes de `@Get(':id')`, por el orden de resolución de rutas. */
+  @Post('recurring')
+  @ApiOperation({
+    summary: 'Agenda una serie de turnos repetidos',
+    description:
+      'Genera `occurrences` turnos a partir de `startsAt`, **contando ese ' +
+      'primero**. La serie repite una hora de pared: "los lunes a las 10" ' +
+      'siguen siendo las 10 aunque en el medio cambie el horario de verano.\n\n' +
+      '**Los que no entran se saltean, no tumban la serie.** Si una fecha cae ' +
+      'en un feriado o en un hueco ya tomado, viene en `skipped` con el ' +
+      'motivo y el resto se crea igual. Conviene mostrar esa lista: son las ' +
+      'fechas que hay que resolver a mano.\n\n' +
+      'Si no entró ninguna, la respuesta es 409 con los motivos.',
+  })
+  @ApiCreatedResponse({ type: RecurringResultDto })
+  @ApiBadRequestResponse({
+    description:
+      'Datos inválidos, o el profesional no presta ese servicio en esa sucursal',
+  })
+  @ApiConflictResponse({
+    description: 'Ninguna fecha de la serie estaba libre',
+  })
+  createRecurring(
+    @Body() dto: CreateRecurringAppointmentsDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<RecurringResultDto> {
+    return this.appointmentsService.createRecurring(dto, user.userId);
   }
 
   @Get()

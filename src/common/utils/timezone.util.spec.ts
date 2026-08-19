@@ -1,6 +1,7 @@
 import {
   timeColumnToMinutes,
   zonedDayOfWeek,
+  zonedMinutesOfDay,
   zonedWallTimeToUtc,
 } from './timezone.util';
 
@@ -124,5 +125,21 @@ describe('timeColumnToMinutes', () => {
     expect(timeColumnToMinutes(new Date('1970-01-01T23:59:00.000Z'))).toBe(
       1439,
     );
+  });
+});
+
+describe('zonedMinutesOfDay', () => {
+  it('devuelve la hora de pared del negocio, no la de UTC', () => {
+    const instante = new Date('2026-09-01T12:00:00.000Z');
+
+    expect(zonedMinutesOfDay(instante, BUENOS_AIRES)).toBe(9 * 60);
+    expect(zonedMinutesOfDay(instante, 'UTC')).toBe(12 * 60);
+  });
+
+  /** Ida y vuelta: lo que entra por `zonedWallTimeToUtc` tiene que volver igual. */
+  it('es el inverso de zonedWallTimeToUtc', () => {
+    const instante = zonedWallTimeToUtc('2026-09-01', 10 * 60 + 30, MADRID);
+
+    expect(zonedMinutesOfDay(instante, MADRID)).toBe(10 * 60 + 30);
   });
 });

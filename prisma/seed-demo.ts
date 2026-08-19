@@ -1,9 +1,16 @@
 import 'dotenv/config';
 import { randomBytes } from 'node:crypto';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { EmployeeRole, PrismaClient, SubscriptionStatus } from '@prisma/client';
+import {
+  AppointmentSource,
+  AppointmentStatus,
+  EmployeeRole,
+  PrismaClient,
+  SubscriptionStatus,
+} from '@prisma/client';
 import * as argon2 from 'argon2';
 import { normalizePhone } from '../src/common/utils/phone.util';
+import { zonedWallTimeToUtc } from '../src/common/utils/timezone.util';
 
 /**
  * Datos de demo para desarrollar el frontend sin tener que crear todo a mano.
@@ -67,6 +74,34 @@ const time = (value: string): Date => new Date(`1970-01-01T${value}:00.000Z`);
 
 /** `"2026-12-25"` → el `Date` a medianoche UTC que espera una columna DATE. */
 const date = (value: string): Date => new Date(`${value}T00:00:00.000Z`);
+
+/** La zona del negocio de demo. Los turnos se ubican en hora de pared. */
+const DEMO_TIMEZONE = 'America/Argentina/Buenos_Aires';
+
+/**
+ * El próximo día de la semana pedido, como `"YYYY-MM-DD"`. Los turnos de demo
+ * van relativos a hoy para que la agenda del front siempre tenga algo, corra el
+ * seed cuando corra.
+ */
+function nextWeekday(dayOfWeek: number): string {
+  const today = new Date();
+  const ahead = (dayOfWeek - today.getUTCDay() + 7) % 7 || 7;
+
+  return new Date(Date.UTC(
+    today.getUTCFullYear(),
+    today.getUTCMonth(),
+    today.getUTCDate() + ahead,
+  ))
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** `("2026-09-07", "10:00")` → ese instante en la zona del negocio. */
+function atBuenosAires(dateOnly: string, hhmm: string): Date {
+  const [hours, minutes] = hhmm.split(':').map(Number);
+
+  return zonedWallTimeToUtc(dateOnly, hours * 60 + minutes, DEMO_TIMEZONE);
+}
 
 /** Lunes a viernes 09:00–18:00, sábado hasta las 14:00, domingo cerrado. */
 function weekFor(tenantId: string, branchId: string) {
@@ -303,7 +338,12 @@ async function main(): Promise<void> {
           bufferAfterMinutes: 10,
           color: '#7C3AED',
         },
-        select: { id: true },
+        select: {
+          id: true,
+          durationMinutes: true,
+          priceCents: true,
+          depositAmountCents: true,
+        },
       });
 
       const coloracion = await tx.service.create({
@@ -318,7 +358,12 @@ async function main(): Promise<void> {
           bufferAfterMinutes: 15,
           color: '#DB2777',
         },
-        select: { id: true },
+        select: {
+          id: true,
+          durationMinutes: true,
+          priceCents: true,
+          depositAmountCents: true,
+        },
       });
 
       // Lucía hace corte en las dos sucursales, pero color solo en Centro:
@@ -433,6 +478,77 @@ async function main(): Promise<void> {
         },
       });
 
+      // ── Turnos ────────────────────────────────────────────────────────
+      // Se ubican en el próximo lunes y miércoles, que es cuando Lucía
+      // atiende en Centro (turno partido 9-13 y 16-20). Van relativos a hoy
+      // para que la agenda del front siempre tenga algo que mostrar, sin
+      // importar cuándo se corra el seed.
+      const proximoLunes = nextWeekday(1);
+      const proximoMiercoles = nextWeekday(3);
+
+      const turnos = [
+        // Corte de 45' + 10' de buffer: ocupa hasta las 10:55.
+        { dia: proximoLunes, hora: '10:00', servicio: corte, minutos: 55,
+          cliente: clientas[0], estado: AppointmentStatus.CONFIRMED },
+        { dia: proximoLunes, hora: '11:00', servicio: corte, minutos: 55,
+          cliente: clientas[1], estado: AppointmentStatus.CONFIRMED },
+        // Coloración de 120' + 15': ocupa toda la tarde del miércoles.
+        { dia: proximoMiercoles, hora: '16:00', servicio: coloracion,
+          minutos: 135, cliente: clientas[2],
+          estado: AppointmentStatus.PENDING_PAYMENT },
+        // Uno cancelado, para que se vea que no ocupa la agenda.
+        { dia: proximoLunes, hora: '16:00', servicio: corte, minutos: 55,
+          cliente: clientas[2], estado: AppointmentStatus.CANCELED_BY_CUSTOMER },
+      ];
+
+      for (const turno of turnos) {
+        const startsAt = atBuenosAires(turno.dia, turno.hora);
+        const cancelado = turno.estado === AppointmentStatus.CANCELED_BY_CUSTOMER;
+
+        const appointment = await tx.appointment.create({
+          data: {
+            tenantId: tenant.id,
+            branchId: centro.id,
+            employeeId: active.id,
+            customerId: turno.cliente.id,
+            startsAt,
+            endsAt: new Date(startsAt.getTime() + turno.minutos * 60_000),
+            status: turno.estado,
+            totalPriceCents: turno.servicio.priceCents,
+            depositAmountCents: turno.servicio.depositAmountCents,
+            createdVia: AppointmentSource.ADMIN,
+            canceledAt: cancelado ? new Date() : null,
+            cancellationReason: cancelado ? 'Se le complicó' : null,
+          },
+          select: { id: true, startsAt: true, endsAt: true },
+        });
+
+        await tx.appointmentService.create({
+          data: {
+            tenantId: tenant.id,
+            appointmentId: appointment.id,
+            serviceId: turno.servicio.id,
+            durationMinutes: turno.servicio.durationMinutes,
+            priceCents: turno.servicio.priceCents,
+          },
+        });
+
+        // La coloración necesita la sala: se copia la ventana del turno, que es
+        // lo que mira el EXCLUDE constraint de recursos.
+        if (turno.servicio.id === coloracion.id) {
+          await tx.appointmentResource.create({
+            data: {
+              tenantId: tenant.id,
+              appointmentId: appointment.id,
+              resourceId: salaColor.id,
+              startsAt: appointment.startsAt,
+              endsAt: appointment.endsAt,
+              blocksSlot: !cancelado,
+            },
+          });
+        }
+      }
+
       return { tenantId: tenant.id, pendingEmployeeId: pending.id };
     },
   );
@@ -467,6 +583,7 @@ async function main(): Promise<void> {
 
    2 sucursales con horario cargado · 1 feriado · turno partido · 1 ausencia
    2 categorías · 2 servicios · 2 recursos · 1 servicio que requiere sala
+   4 turnos en la semana que viene (uno esperando seña, uno cancelado)
    3 clientas (teléfonos escritos de tres formas) · 2 etiquetas · 1 VIP
 
    Link para probar la pantalla de activación:

@@ -8,6 +8,7 @@ import {
   AppointmentSource,
   AppointmentStatus,
   Prisma,
+  RecurrenceFrequency,
   type CancellationRefundType,
 } from '@prisma/client';
 import { TenantContextMissingError } from '../../common/errors/tenant-context-missing.error';
@@ -18,6 +19,7 @@ import {
   timeColumnToMinutes,
   zonedDateOnly,
   zonedDayOfWeek,
+  zonedMinutesOfDay,
   zonedWallTimeToUtc,
 } from '../../common/utils/timezone.util';
 import { exclusionViolationConstraint } from '../../prisma/exclusion-violation';
@@ -39,13 +41,16 @@ import {
   resolveRefund,
   type CancellationPolicy,
 } from './status-machine';
+import { recurrenceDates } from './recurrence';
 import { MAX_RANGE_DAYS } from './dto/appointment.dto';
 import type {
   AppointmentResponseDto,
   ChangeAppointmentStatusDto,
   ChangeStatusResultDto,
   CreateAppointmentDto,
+  CreateRecurringAppointmentsDto,
   ListAppointmentsQueryDto,
+  RecurringResultDto,
   RescheduleAppointmentDto,
   UpdateAppointmentDto,
 } from './dto/appointment.dto';
@@ -103,6 +108,22 @@ const APPOINTMENT_SELECT = {
 type AppointmentRow = Prisma.AppointmentGetPayload<{
   select: typeof APPOINTMENT_SELECT;
 }>;
+
+/**
+ * Lo que un turno necesita y que no cambia con la fecha. Una serie lo calcula
+ * una vez y lo reusa para las N repeticiones.
+ */
+interface BookingPlan {
+  branchId: string;
+  employeeId: string;
+  customerId: string;
+  serviceIds: string[];
+  services: ServiceSnapshot[];
+  totals: { minutes: number; priceCents: number; depositCents: number | null };
+  status: AppointmentStatus;
+  resourceIds: string[];
+  timezone: string;
+}
 
 /** El servicio tal como se lo copia al turno. */
 interface ServiceSnapshot {
@@ -305,33 +326,186 @@ export class AppointmentsService {
       timezone,
     });
 
-    const status = await this.initialStatus(totals.depositCents);
-    const resourceIds = await this.requiredResourceIds(
-      dto.serviceIds,
-      dto.branchId,
+    const plan = await this.bookingPlan(dto, services, totals);
+    const id = await this.insertAppointment(plan, startsAt, endsAt, {
+      createdByUserId,
+      createdVia: AppointmentSource.ADMIN,
+      notes: dto.notes ?? null,
+    });
+
+    return this.findOne(id);
+  }
+
+  /**
+   * Agenda una serie de turnos repetidos.
+   *
+   * **Los que chocan se saltean, no tumban la serie.** Si el turno 7 de 10 cae
+   * en un feriado o en un hueco ya tomado, se crean los otros 9 y el que quedó
+   * afuera vuelve en `skipped` con el motivo. Rechazar los diez porque uno no
+   * entra obligaría al mostrador a adivinar cuál era y rehacer todo a mano.
+   *
+   * Consecuencia de esa decisión: **cada turno va en su propia transacción**.
+   * Una transacción única no serviría — en Postgres el primer error la aborta
+   * entera, que es justo lo contrario de "seguí con los demás".
+   *
+   * Si no entró ninguno la respuesta es un 409 con la lista de motivos: la
+   * serie no existiría y devolver un grupo vacío sería basura en la base.
+   */
+  async createRecurring(
+    dto: CreateRecurringAppointmentsDto,
+    createdByUserId: string,
+  ): Promise<RecurringResultDto> {
+    const timezone = await this.tenantTimezone();
+    const services = await this.loadServices(dto.serviceIds);
+    const totals = totalsOf(services);
+    const plan = await this.bookingPlan(dto, services, totals);
+
+    // La hora se guarda aparte de la fecha: la serie repite una hora de pared
+    // ("los lunes a las 10"), no un intervalo fijo de milisegundos.
+    const first = new Date(dto.startsAt);
+    const minutesOfDay = zonedMinutesOfDay(first, timezone);
+    const dates = recurrenceDates(
+      zonedDateOnly(first, timezone),
+      dto.frequency,
+      dto.occurrences,
     );
 
+    const group = await this.prisma.scoped.recurrenceGroup.create({
+      data: scopedCreate<Prisma.RecurrenceGroupUncheckedCreateInput>({
+        frequency: dto.frequency,
+        dayOfWeek:
+          dto.frequency === RecurrenceFrequency.MONTHLY
+            ? null
+            : zonedDayOfWeek(dates[0], timezone),
+        occurrences: dto.occurrences,
+      }),
+      select: { id: true },
+    });
+
+    const created: string[] = [];
+    const skipped: { startsAt: Date; reason: string }[] = [];
+
+    for (const date of dates) {
+      const startsAt = zonedWallTimeToUtc(date, minutesOfDay, timezone);
+      const endsAt = addMinutes(startsAt, totals.minutes);
+
+      try {
+        created.push(
+          await this.insertAppointment(plan, startsAt, endsAt, {
+            createdByUserId,
+            createdVia: AppointmentSource.RECURRING,
+            notes: dto.notes ?? null,
+            recurrenceGroupId: group.id,
+          }),
+        );
+      } catch (error) {
+        if (!(error instanceof ConflictException)) {
+          throw error;
+        }
+
+        skipped.push({ startsAt, reason: conflictMessage(error) });
+      }
+    }
+
+    if (created.length === 0) {
+      await this.prisma.scoped.recurrenceGroup.delete({
+        where: { id: group.id },
+      });
+
+      throw new ConflictException({
+        message: 'Ninguna de las fechas de la serie estaba libre',
+        skipped,
+      });
+    }
+
+    // `occurrences` cuenta los turnos que existen, no los que se pidieron.
+    await this.prisma.scoped.recurrenceGroup.update({
+      where: { id: group.id },
+      data: { occurrences: created.length },
+    });
+
+    return {
+      recurrenceGroupId: group.id,
+      created: await Promise.all(created.map((id) => this.findOne(id))),
+      skipped,
+    };
+  }
+
+  /**
+   * Todo lo que un turno necesita saber y que **no depende de la fecha**: qué
+   * servicios, cuánto sale, con qué estado nace y qué recursos ocupa.
+   *
+   * Existe para que una serie lo calcule una sola vez en vez de repetir las
+   * mismas cinco consultas por cada turno.
+   */
+  private async bookingPlan(
+    dto: CreateAppointmentDto,
+    services: ServiceSnapshot[],
+    totals: ReturnType<typeof totalsOf>,
+  ): Promise<BookingPlan> {
+    await this.assertEmployeeCanPerform(
+      dto.employeeId,
+      dto.branchId,
+      dto.serviceIds,
+    );
+    await this.assertCustomerExists(dto.customerId);
+
+    return {
+      branchId: dto.branchId,
+      employeeId: dto.employeeId,
+      customerId: dto.customerId,
+      serviceIds: dto.serviceIds,
+      services,
+      totals,
+      status: await this.initialStatus(totals.depositCents),
+      resourceIds: await this.requiredResourceIds(dto.serviceIds, dto.branchId),
+      timezone: await this.tenantTimezone(),
+    };
+  }
+
+  /** Valida el hueco y escribe el turno con sus servicios y recursos. */
+  private async insertAppointment(
+    plan: BookingPlan,
+    startsAt: Date,
+    endsAt: Date,
+    meta: {
+      createdByUserId: string;
+      createdVia: AppointmentSource;
+      notes: string | null;
+      recurrenceGroupId?: string;
+    },
+  ): Promise<string> {
+    await this.assertSlotIsFree({
+      employeeId: plan.employeeId,
+      branchId: plan.branchId,
+      serviceIds: plan.serviceIds,
+      startsAt,
+      endsAt,
+      timezone: plan.timezone,
+    });
+
     try {
-      const id = await this.prisma.scoped.$transaction(async (tx) => {
+      return await this.prisma.scoped.$transaction(async (tx) => {
         const appointment = await tx.appointment.create({
           data: scopedCreate<Prisma.AppointmentUncheckedCreateInput>({
-            branchId: dto.branchId,
-            employeeId: dto.employeeId,
-            customerId: dto.customerId,
+            branchId: plan.branchId,
+            employeeId: plan.employeeId,
+            customerId: plan.customerId,
             startsAt,
             endsAt,
-            status,
-            totalPriceCents: totals.priceCents,
-            depositAmountCents: totals.depositCents,
-            notes: dto.notes ?? null,
-            createdByUserId,
-            createdVia: AppointmentSource.ADMIN,
+            status: plan.status,
+            totalPriceCents: plan.totals.priceCents,
+            depositAmountCents: plan.totals.depositCents,
+            notes: meta.notes,
+            createdByUserId: meta.createdByUserId,
+            createdVia: meta.createdVia,
+            recurrenceGroupId: meta.recurrenceGroupId ?? null,
           }),
           select: { id: true },
         });
 
         await tx.appointmentService.createMany({
-          data: services.map((service) =>
+          data: plan.services.map((service) =>
             scopedCreate<Prisma.AppointmentServiceUncheckedCreateInput>({
               appointmentId: appointment.id,
               serviceId: service.id,
@@ -341,15 +515,13 @@ export class AppointmentsService {
           ),
         });
 
-        await this.createResourceRows(tx, appointment.id, resourceIds, {
+        await this.createResourceRows(tx, appointment.id, plan.resourceIds, {
           startsAt,
           endsAt,
         });
 
         return appointment.id;
       });
-
-      return await this.findOne(id);
     } catch (error) {
       throw scheduleConflictOr(error);
     }
@@ -1329,4 +1501,17 @@ function pickDefined<T extends object>(values: Record<string, unknown>): T {
   return Object.fromEntries(
     Object.entries(values).filter(([, value]) => value !== undefined),
   ) as T;
+}
+
+/** El texto de un `ConflictException`, venga como string o dentro de un objeto. */
+function conflictMessage(error: ConflictException): string {
+  const response = error.getResponse();
+
+  if (typeof response === 'string') {
+    return response;
+  }
+
+  const message = (response as { message?: unknown }).message;
+
+  return typeof message === 'string' ? message : error.message;
 }

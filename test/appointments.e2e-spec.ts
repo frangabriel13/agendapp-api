@@ -40,6 +40,12 @@ interface AppointmentResponse {
   cancellationReason: string | null;
 }
 
+interface RecurringResult {
+  recurrenceGroupId: string;
+  created: AppointmentResponse[];
+  skipped: { startsAt: string; reason: string }[];
+}
+
 interface ChangeStatusResult {
   appointment: AppointmentResponse;
   refund: {
@@ -169,6 +175,22 @@ describe('Turnos (e2e)', () => {
       .expect(200);
 
     return body.employee.id;
+  }
+
+  /** El horario por defecto es lunes y martes; esto lo abre a los siete días. */
+  async function scheduleAllWeek(id: string): Promise<void> {
+    await request(server())
+      .put(`/employees/${id}/schedules`)
+      .set(...auth(tenant.accessToken))
+      .send({
+        shifts: Array.from({ length: 7 }, (_, dayOfWeek) => ({
+          branchId,
+          dayOfWeek,
+          startsAt: '09:00',
+          endsAt: '18:00',
+        })),
+      })
+      .expect(200);
   }
 
   async function assign(
@@ -857,6 +879,183 @@ describe('Turnos (e2e)', () => {
         .expect(200);
 
       await mover(turno.id, { startsAt: enBuenosAires('15:00') }).expect(409);
+    });
+  });
+
+  describe('Serie de turnos repetidos', () => {
+    const serie = (body: Record<string, unknown> = {}): request.Test =>
+      request(server())
+        .post('/appointments/recurring')
+        .set(...auth(tenant.accessToken))
+        .send({
+          branchId,
+          employeeId,
+          customerId,
+          serviceIds: [serviceId],
+          startsAt: enBuenosAires('10:00'),
+          frequency: 'WEEKLY',
+          occurrences: 4,
+          ...body,
+        });
+
+    /** Los lunes de la serie, en hora de Buenos Aires. */
+    const fechas = (result: RecurringResult): string[] =>
+      result.created.map((turno) => turno.startsAt.slice(0, 10));
+
+    it('crea los cuatro lunes, contando el primero', async () => {
+      const response = await serie().expect(201);
+      const result = response.body as RecurringResult;
+
+      expect(fechas(result)).toEqual([
+        '2026-09-07',
+        '2026-09-14',
+        '2026-09-21',
+        '2026-09-28',
+      ]);
+      expect(result.skipped).toEqual([]);
+    });
+
+    it('todos quedan atados al mismo grupo y con el mismo horario', async () => {
+      const response = await serie().expect(201);
+      const result = response.body as RecurringResult;
+
+      const enGrupo = await prisma.appointment.count({
+        where: { recurrenceGroupId: result.recurrenceGroupId },
+      });
+
+      expect(enGrupo).toBe(4);
+      expect(
+        result.created.every((turno) =>
+          turno.startsAt.endsWith('13:00:00.000Z'),
+        ),
+      ).toBe(true);
+    });
+
+    it('quincenal salta uno por medio', async () => {
+      const response = await serie({
+        frequency: 'BIWEEKLY',
+        occurrences: 3,
+      }).expect(201);
+
+      expect(fechas(response.body as RecurringResult)).toEqual([
+        '2026-09-07',
+        '2026-09-21',
+        '2026-10-05',
+      ]);
+    });
+
+    it('mensual repite el día del mes', async () => {
+      // El 7 de octubre cae miércoles y el 7 de noviembre sábado: sin horario
+      // esos días la serie los saltearía, que es otro test.
+      await scheduleAllWeek(employeeId);
+
+      const response = await serie({
+        frequency: 'MONTHLY',
+        occurrences: 3,
+      }).expect(201);
+
+      expect(fechas(response.body as RecurringResult)).toEqual([
+        '2026-09-07',
+        '2026-10-07',
+        '2026-11-07',
+      ]);
+    });
+
+    /** La decisión de la fase: uno que choca no tumba a los demás. */
+    it('saltea la fecha ocupada y crea el resto', async () => {
+      // El segundo lunes ya tiene ese horario tomado.
+      await bookOk({ startsAt: enBuenosAires('10:00', '2026-09-14') });
+
+      const response = await serie().expect(201);
+      const result = response.body as RecurringResult;
+
+      expect(fechas(result)).toEqual([
+        '2026-09-07',
+        '2026-09-21',
+        '2026-09-28',
+      ]);
+      expect(result.skipped).toHaveLength(1);
+      expect(result.skipped[0].startsAt).toBe(
+        enBuenosAires('10:00', '2026-09-14'),
+      );
+      expect(result.skipped[0].reason).toContain('libre');
+    });
+
+    it('saltea un feriado', async () => {
+      await request(server())
+        .post(`/branches/${branchId}/special-days`)
+        .set(...auth(tenant.accessToken))
+        .send({ date: '2026-09-21', isClosed: true, description: 'Feriado' })
+        .expect(201);
+
+      const result = (await serie().expect(201)).body as RecurringResult;
+
+      expect(fechas(result)).not.toContain('2026-09-21');
+      expect(result.skipped).toHaveLength(1);
+    });
+
+    it('el grupo cuenta los turnos que existen, no los que se pidieron', async () => {
+      await bookOk({ startsAt: enBuenosAires('10:00', '2026-09-14') });
+
+      const result = (await serie().expect(201)).body as RecurringResult;
+
+      const grupo = await prisma.recurrenceGroup.findUniqueOrThrow({
+        where: { id: result.recurrenceGroupId },
+      });
+
+      expect(grupo.occurrences).toBe(3);
+    });
+
+    it('si no entra ninguna, 409 con los motivos y sin grupo huérfano', async () => {
+      const response = await serie({
+        startsAt: enBuenosAires('20:00'), // fuera del horario de atención
+      }).expect(409);
+
+      const body = response.body as {
+        message: string;
+        skipped: { reason: string }[];
+      };
+
+      expect(body.skipped).toHaveLength(4);
+      expect(await prisma.recurrenceGroup.count()).toBe(0);
+    });
+
+    it('rechaza una serie más larga que el tope', async () => {
+      await serie({ occurrences: 53 }).expect(400);
+    });
+
+    it('rechaza una frecuencia que no existe', async () => {
+      await serie({ frequency: 'DAILY' }).expect(400);
+    });
+
+    it('los turnos de la serie quedan marcados como recurrentes', async () => {
+      const result = (await serie({ occurrences: 1 }).expect(201))
+        .body as RecurringResult;
+
+      const turno = await prisma.appointment.findUniqueOrThrow({
+        where: { id: result.created[0].id },
+      });
+
+      expect(turno.createdVia).toBe('RECURRING');
+    });
+
+    it('cancelar uno de la serie no toca a los demás', async () => {
+      const result = (await serie().expect(201)).body as RecurringResult;
+
+      await request(server())
+        .patch(`/appointments/${result.created[1].id}/status`)
+        .set(...auth(tenant.accessToken))
+        .send({ status: AppointmentStatus.CANCELED_BY_CUSTOMER })
+        .expect(200);
+
+      const vivos = await prisma.appointment.count({
+        where: {
+          recurrenceGroupId: result.recurrenceGroupId,
+          status: AppointmentStatus.CONFIRMED,
+        },
+      });
+
+      expect(vivos).toBe(3);
     });
   });
 
