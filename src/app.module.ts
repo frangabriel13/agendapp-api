@@ -19,6 +19,8 @@ import { RolesGuard } from './common/guards/roles.guard';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BranchesModule } from './modules/branches/branches.module';
+import { CustomerTagsModule } from './modules/customer-tags/customer-tags.module';
+import { CustomersModule } from './modules/customers/customers.module';
 import { EmployeesModule } from './modules/employees/employees.module';
 import { ResourcesModule } from './modules/resources/resources.module';
 import { ServiceCategoriesModule } from './modules/service-categories/service-categories.module';
@@ -76,6 +78,8 @@ import type { Env } from './config/env.schema';
     ServiceCategoriesModule,
     ServicesModule,
     ResourcesModule,
+    CustomersModule,
+    CustomerTagsModule,
   ],
   controllers: [],
   providers: [

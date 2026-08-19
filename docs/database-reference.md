@@ -455,6 +455,30 @@ Recursos que requiere un servicio (un servicio puede requerir varios).
 
 ## 👤 7. Clientes Finales
 
+> **Estado: implementado (Fase 4).** Migración `20260819162013_customers`.
+> Lo construido agrega sobre este modelo conceptual:
+>
+> - `customers` lleva **`phone_normalized`**: el teléfono con solo los dígitos y
+>   de esos los últimos 10 (`src/common/utils/phone.util.ts`). Es la columna que
+>   compara el unique; `phone` guarda lo que la persona tipeó, que es lo que se
+>   muestra y se marca. Sin esta separación, `+54 9 11 5555-1234` y
+>   `11 5555-1234` serían dos fichas de la misma persona.
+> - El índice de teléfono **no es común sino único parcial** sobre los no
+>   borrados: un teléfono, un cliente. `POST /customers` con uno repetido
+>   devuelve 409 con la ficha existente en vez de fusionar. El de email sí es
+>   común: compartir casilla entre familiares es normal y no debe bloquear el
+>   alta.
+> - `customer_tags` lleva `updated_at`, `deleted_at` y un único parcial de
+>   nombre por tenant (insensible a mayúsculas), como las categorías de
+>   servicios.
+> - `customer_tag_assignments` lleva `tenant_id` (convención transversal) y está
+>   exenta de soft delete por ser tabla de unión — sacar una etiqueta es
+>   sacarla. Dar de baja una etiqueta borra sus asignaciones en la misma
+>   transacción.
+> - CHECK: nombre y teléfono no vacíos, fecha de nacimiento ≥ 1900-01-01 y color
+>   `#RRGGBB`. El techo de la fecha ("no en el futuro") lo valida el DTO:
+>   `CURRENT_DATE` no es `IMMUTABLE` y un CHECK no lo admite.
+
 ### `customers`
 Clientes del negocio. No se logean, los crea el negocio o se autogeneran al reservar online.
 
@@ -475,6 +499,8 @@ Clientes del negocio. No se logean, los crea el negocio o se autogeneran al rese
 **Índices:**
 - `INDEX(tenant_id, phone)` — para detección de duplicados
 - `INDEX(tenant_id, email)`
+
+> Implementado como `UNIQUE INDEX (tenant_id, phone_normalized) WHERE deleted_at IS NULL`. Ver la nota de estado arriba.
 
 ### `customer_tags`
 Etiquetas para segmentar clientes.

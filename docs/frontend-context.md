@@ -40,8 +40,9 @@ rompe algo, aparece como error de compilación en vez de como bug en runtime.
 ### Datos de demo
 
 `npm run seed:demo` crea el tenant **Peluquería Demo** (slug `peluqueria-demo`,
-plan `avanzado`) con 2 sucursales con horario, 1 feriado, 3 empleados y un
-catálogo cargado (2 categorías, 2 servicios, 2 recursos):
+plan `avanzado`) con 2 sucursales con horario, 1 feriado, 3 empleados, un
+catálogo cargado (2 categorías, 2 servicios, 2 recursos) y 3 clientas con 2
+etiquetas:
 
 | Email | Rol | Estado |
 |---|---|---|
@@ -51,6 +52,10 @@ catálogo cargado (2 categorías, 2 servicios, 2 recursos):
 
 Contraseña de los activos: `demo1234`. El seed imprime el link de activación de
 la empleada pendiente, útil para probar esa pantalla.
+
+Los teléfonos de las tres clientas están escritos de tres formas distintas a
+propósito (`+54 9 11 4123-5566`, `(011) 4777-8899`, `11 5030-2211`): es lo que
+pasa en la vida real y sirve para probar que la búsqueda los encuentra igual.
 
 El seed es idempotente: borra el tenant demo anterior antes de recrearlo.
 
@@ -173,12 +178,16 @@ Todos los errores tienen el mismo cuerpo:
 {
   "statusCode": 400,
   "message": "El email no tiene un formato válido",  // string O string[]
-  "error": "Bad Request",
+  "error": "BAD_REQUEST",
   "path": "/auth/register",
   "timestamp": "2026-08-13T14:30:00.000Z",
   "requestId": "a1b2c3d4-..."
 }
 ```
+
+**Ramificar por `statusCode`, nunca por `error`.** El `error` es una etiqueta para
+mirar en un log, y su forma no es estable: según de dónde venga el error puede
+llegar como `"NOT_FOUND"` o como `"Not Found"`. El `statusCode` sí es confiable.
 
 **`message` puede ser un string o un array de strings.** Los errores de validación
 devuelven un array con un mensaje por campo inválido. El helper que muestra
@@ -190,6 +199,11 @@ usuario tal cual.
 El `requestId` aparece también en los logs del backend: si algo falla, ese id
 permite encontrar la request exacta.
 
+**Algunos errores traen campos extra** además de los seis de arriba, cuando el
+front necesita ese dato para reaccionar. Hoy el único es el 409 de
+`POST /customers`, que suma `existingCustomer` con la ficha ya cargada. Los seis
+campos base están siempre; los extra se documentan en el endpoint que los usa.
+
 ### Códigos
 
 | Código | Significado |
@@ -198,7 +212,7 @@ permite encontrar la request exacta.
 | 401 | Falta el token o venció → disparar el refresh. |
 | 403 | El rol no alcanza. Reintentar no sirve. |
 | 404 | No existe, o pertenece a otro tenant (son indistinguibles a propósito). |
-| 409 | Conflicto: nombre duplicado, solapamiento de horario. |
+| 409 | Conflicto: nombre duplicado, solapamiento de horario, teléfono de cliente repetido. |
 | 429 | Rate limit. Ver `Retry-After`. |
 
 ---
@@ -261,7 +275,7 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 
 ## Qué existe hoy y qué no
 
-**Disponible — 56 endpoints:**
+**Disponible — 68 endpoints:**
 
 | Área | Endpoints | Alcanza para |
 |---|---|---|
@@ -272,11 +286,12 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 | `/service-categories` | 5 | CRUD de categorías del catálogo |
 | `/services` | 9 | CRUD de servicios, quién los presta y dónde, qué recursos requieren |
 | `/resources` | 5 | CRUD de camillas, salas y sillones por sucursal |
+| `/customers` | 7 | CRUD de clientes, búsqueda paginada, etiquetas de cada uno |
+| `/customer-tags` | 5 | CRUD de etiquetas ("VIP", "Debe seña") |
 | `/health` | 1 | Healthcheck |
 
 **Todavía no existe:**
 
-- Clientes (Fase 4)
 - **Turnos, disponibilidad y calendario** (Fase 5)
 - Pagos (Fase 6) y portal público de reservas (Fase 7)
 
@@ -312,6 +327,66 @@ Detalles menores: el `color` del servicio es `#RRGGBB` y va directo al calendari
 `durationMinutes` va de 1 a 1440; las categorías se ordenan por `displayOrder` y,
 a igual valor, alfabéticamente; dar de baja una categoría **no** borra sus
 servicios, los deja con `category: null`.
+
+### Detalle sobre los clientes (Fase 4)
+
+**Un teléfono, un cliente.** El teléfono es lo que identifica a una persona, no
+el nombre. Si `POST /customers` recibe uno que ya está cargado en el negocio,
+responde **409 y no crea nada** — pero el cuerpo trae la ficha existente:
+
+```jsonc
+{
+  "statusCode": 409,
+  "message": "Ya tenés un cliente con ese teléfono",
+  "error": "Conflict",
+  "existingCustomer": { "id": "...", "firstName": "María", "lastName": "González", ... }
+}
+```
+
+Con eso alcanza para mostrar *"Ya existe María González con ese teléfono — ¿es
+esta persona?"* y ofrecer abrir su ficha, sin ir a buscarla con otra request.
+**No hay merge automático a propósito:** dos personas pueden compartir teléfono
+(una madre y su hija, una pareja), y unir dos historiales es una decisión de
+quien está atendiendo. `PATCH /customers/:id` pasa por el mismo chequeo, así que
+cambiar un teléfono a uno ya usado también da 409.
+
+**El teléfono se compara normalizado.** El backend guarda lo que el usuario
+tipeó y lo muestra tal cual, pero compara solo los dígitos (los últimos 10). O
+sea que `+54 9 11 5555-1234`, `011 5555-1234` y `(011) 5555.1234` son la misma
+persona, tanto para detectar duplicados como para buscar. **No hace falta
+normalizar nada en el front.** El único formato que todavía no se empareja es el
+`15` viejo (`011 15 5555-1234`).
+
+**La búsqueda es una sola caja.** `GET /customers?search=...` cruza nombre,
+apellido, email y teléfono a la vez, así que no hacen falta filtros separados. Si
+se escriben varias palabras, todas tienen que aparecer en el nombre completo, en
+cualquier orden: `maría gonzález` y `gonzález maría` encuentran lo mismo.
+
+**Es el primer endpoint paginado de la API.** La respuesta no es un array suelto:
+
+```jsonc
+{
+  "data": [ /* ...clientes... */ ],
+  "meta": { "page": 1, "pageSize": 20, "total": 137, "totalPages": 7 }
+}
+```
+
+`page` arranca en 1. `pageSize` va de 1 a 100 (por defecto 20; pedir más da 400).
+Pedir una página más allá del final devuelve `data: []` con el `meta` correcto,
+no un 404. **Esta forma se va a repetir en el historial de turnos y de pagos**,
+así que conviene resolverla una sola vez.
+
+**Permisos:** cargar y editar clientes lo puede hacer cualquier empleado — quien
+atiende el mostrador no siempre es administrativo. **Dar de baja** un cliente y
+**administrar las etiquetas** sí son `OWNER` / `ADMINISTRATIVE`.
+
+Detalles menores: el apellido, el email, la fecha de nacimiento y las notas son
+opcionales; solo nombre y teléfono son obligatorios. El email **no** es único
+(dos clientes pueden compartir casilla). `dateOfBirth` es `"YYYY-MM-DD"`, no
+puede ser futura. `PUT /customers/:id/tags` reemplaza el set completo (`[]` las
+saca todas). Cada etiqueta trae `customerCount`, útil para avisar antes de
+borrarla; dar de baja una etiqueta la saca de todos los clientes. Dar de baja un
+cliente **libera su teléfono** para una ficha nueva.
 
 ### Detalle sobre la invitación de empleados
 

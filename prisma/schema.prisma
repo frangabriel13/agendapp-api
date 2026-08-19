@@ -200,6 +200,9 @@ model Tenant {
   employeeServices    EmployeeService[]
   resources           Resource[]
   serviceResources    ServiceResource[]
+  customers           Customer[]
+  customerTags        CustomerTag[]
+  customerTagLinks    CustomerTagAssignment[]
 
   @@index([planId])
   @@map("tenants")
@@ -569,4 +572,83 @@ model ServiceResource {
   @@index([tenantId])
   @@index([resourceId])
   @@map("service_resources")
+}
+
+// ─────────────────────────────── Fase 4: clientes ───────────────────────────
+
+/// Cliente del negocio. No se logea: lo carga el mostrador, o se autogenera al
+/// reservar por el portal público (Fase 7).
+///
+/// La identidad de un cliente es su TELÉFONO, no su nombre ni su email: es lo
+/// único que el mostrador siempre pide y lo que permite reconocer a alguien que
+/// vuelve. Por eso hay un unique parcial sobre `(tenant_id, phone_normalized)`
+/// y `POST /customers` devuelve 409 con la ficha existente en vez de crear un
+/// duplicado.
+///
+/// `phone` guarda lo que la persona tipeó ("+54 9 11 1234-5678"); el que manda
+/// para comparar es `phoneNormalized`, que lo calcula el servicio. Ver
+/// `normalizePhone` en `src/common/utils/phone.util.ts`.
+///
+/// El email NO es único a propósito: una madre y su hija comparten casilla más
+/// seguido de lo que uno esperaría. Tiene índice solo para buscar rápido.
+model Customer {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  firstName       String    @map("first_name") @db.VarChar(100)
+  lastName        String?   @map("last_name") @db.VarChar(100)
+  phone           String    @db.VarChar(30)
+  phoneNormalized String    @map("phone_normalized") @db.VarChar(30)
+  email           String?   @db.VarChar(255)
+  dateOfBirth     DateTime? @map("date_of_birth") @db.Date
+  notes           String?   @db.Text
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  tagAssignments CustomerTagAssignment[]
+
+  @@index([tenantId])
+  @@index([tenantId, phoneNormalized])
+  @@index([tenantId, email])
+  @@map("customers")
+}
+
+/// Etiqueta para segmentar clientes ("VIP", "Debe seña", "Alérgica al amoníaco").
+/// El color es `#RRGGBB` y lo usa el front para pintar el chip.
+model CustomerTag {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  name      String    @db.VarChar(60)
+  color     String?   @db.VarChar(7)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  assignments CustomerTagAssignment[]
+
+  @@index([tenantId])
+  @@map("customer_tags")
+}
+
+/// Qué etiquetas tiene cada cliente. Tabla de unión, exenta de soft delete:
+/// sacar una etiqueta es sacarla, no archivarla.
+model CustomerTagAssignment {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  customerId String   @map("customer_id") @db.Uuid
+  tagId      String   @map("tag_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant   Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  tag      CustomerTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, tagId])
+  @@index([tenantId])
+  @@index([tagId])
+  @@map("customer_tag_assignments")
 }
