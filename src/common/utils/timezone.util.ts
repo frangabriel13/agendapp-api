@@ -148,3 +148,22 @@ export function zonedDateOnly(instant: Date, timeZone: string): string {
 
   return parts;
 }
+
+/**
+ * A qué hora de pared corresponde ese instante en esa zona, en minutos desde la
+ * medianoche. El complemento de `zonedDateOnly`: entre las dos reconstruyen la
+ * hora que ve el negocio a partir de un `TIMESTAMPTZ`.
+ */
+export function zonedMinutesOfDay(instant: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).formatToParts(instant);
+
+  const read = (type: Intl.DateTimeFormatPartTypes): number =>
+    Number(parts.find((part) => part.type === type)?.value ?? '0');
+
+  return read('hour') * 60 + read('minute');
+}

@@ -3,6 +3,7 @@ import {
   AppointmentSource,
   AppointmentStatus,
   CancellationRefundType,
+  RecurrenceFrequency,
 } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
@@ -11,11 +12,14 @@ import {
   IsArray,
   IsEnum,
   IsISO8601,
+  IsInt,
   IsOptional,
   IsString,
   IsUUID,
   Matches,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
 import { arrayQueryParam } from '../../../common/utils/array-query.transform';
 import { DATE_ONLY_PATTERN } from '../../../common/utils/date-only.util';
@@ -305,4 +309,62 @@ export class ListAppointmentsQueryDto {
   @Transform(arrayQueryParam)
   @IsEnum(AppointmentStatus, { each: true })
   status?: AppointmentStatus[];
+}
+
+/** Tope de una serie. El CHECK de la base pide lo mismo. */
+export const MAX_OCCURRENCES = 52;
+
+export class CreateRecurringAppointmentsDto extends CreateAppointmentDto {
+  @ApiProperty({
+    enum: RecurrenceFrequency,
+    description:
+      '`WEEKLY` y `BIWEEKLY` repiten el mismo día de la semana; `MONTHLY` ' +
+      'repite el mismo día del mes.',
+  })
+  @IsEnum(RecurrenceFrequency)
+  frequency!: RecurrenceFrequency;
+
+  @ApiProperty({
+    minimum: 1,
+    maximum: MAX_OCCURRENCES,
+    example: 4,
+    description:
+      'Cuántos turnos generar **contando el primero**: con `startsAt` un lunes ' +
+      'y `occurrences: 4` salen ese lunes y los tres siguientes.',
+  })
+  @IsInt()
+  @Min(1)
+  @Max(MAX_OCCURRENCES)
+  occurrences!: number;
+}
+
+export class SkippedOccurrenceDto {
+  @ApiProperty({ example: '2026-09-21T13:00:00.000Z' })
+  startsAt!: Date;
+
+  @ApiProperty({
+    example: 'Ese horario no está libre: se pisa con otro turno',
+    description: 'Por qué no se pudo agendar ese, listo para mostrar.',
+  })
+  reason!: string;
+}
+
+export class RecurringResultDto {
+  @ApiProperty({ description: 'Ata a toda la serie.' })
+  recurrenceGroupId!: string;
+
+  @ApiProperty({
+    type: [AppointmentResponseDto],
+    description: 'Los que sí entraron, en orden.',
+  })
+  created!: AppointmentResponseDto[];
+
+  @ApiProperty({
+    type: [SkippedOccurrenceDto],
+    description:
+      'Las fechas que quedaron afuera y por qué. **No es un error**: la serie ' +
+      'se crea igual con el resto. Conviene mostrarlas para que el mostrador ' +
+      'las resuelva a mano.',
+  })
+  skipped!: SkippedOccurrenceDto[];
 }
