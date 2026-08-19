@@ -8,7 +8,7 @@
 
 ## 📌 Estado actual del repo
 
-> **Fases 0 a 3 cerradas.** El próximo paso es la Fase 4 (clientes).
+> **Fases 0 a 4 cerradas.** El próximo paso es la Fase 5 (turnos), la más delicada.
 
 **Cimientos (Fase 0)**
 
@@ -48,8 +48,17 @@
 - ✅ `ServiceCategoriesModule`: CRUD. Dar de baja una categoría deja sus servicios sin categoría en vez de arrastrarlos — el `ON DELETE SET NULL` de la FK no se dispara con baja lógica, así que lo hace el service.
 - ✅ `ServicesModule`: CRUD, `PUT /services/:id/employees` (quién lo presta **y en qué sucursal**) y `PUT /services/:id/resources`.
 - ✅ `ResourcesModule`: CRUD por sucursal, con `plan.includesResources` como gate del alta.
-- ✅ Total del repo: **227 tests unitarios + 170 e2e**.
-- ❌ Todavía sin RLS (Fase 8) ni clientes/turnos (Fase 4 en adelante).
+- ❌ Todavía sin RLS (Fase 8) ni turnos (Fase 5 en adelante).
+
+**Clientes (Fase 4)**
+
+- ✅ Migración `20260819162013_customers`: `Customer`, `CustomerTag` y `CustomerTagAssignment`, con el índice único parcial de teléfono por tenant, el de nombre de etiqueta por tenant y los CHECK de nombre, teléfono, fecha de nacimiento y formato de color.
+- ✅ **Un teléfono, un cliente.** La columna `phone_normalized` (solo dígitos, últimos 10 — `src/common/utils/phone.util.ts`) es la que compara el unique; `phone` guarda lo que la persona tipeó. `POST /customers` con un teléfono repetido devuelve **409 con la ficha existente en `existingCustomer`**: no hay merge automático, porque dos personas pueden compartir teléfono y unir dos historiales es una decisión del mostrador. `PATCH` pasa por el mismo chequeo.
+- ✅ `CustomersModule`: CRUD, búsqueda paginada (`GET /customers?search=&tagId=&page=&pageSize=`) y `PUT /customers/:id/tags`. La búsqueda cruza nombre, apellido, email y teléfono normalizado, y con varias palabras exige que todas aparezcan en el nombre completo, en cualquier orden.
+- ✅ `CustomerTagsModule`: CRUD con `customerCount` de clientes vivos. Dar de baja una etiqueta la saca de todos los clientes.
+- ✅ Paginación compartida en `src/common/dto/pagination.dto.ts` (`{ data, meta }` por offset). La estrenan los clientes; la van a reusar el historial de turnos y el de pagos.
+- ✅ `AllExceptionsFilter` ahora deja pasar los campos extra que un service adjunte al cuerpo de un error — es lo que permite que el 409 lleve la ficha.
+- ✅ Total del repo: **274 tests unitarios + 219 e2e**.
 
 **Dos reglas que la Fase 5 va a dar por sentadas**
 
@@ -66,7 +75,7 @@
 | ✅ 1 | Auth + Tenant base | Registro, login, JWT, planes, suscripción |
 | ✅ 2 | Estructura del negocio | Sucursales y empleados |
 | ✅ 3 | Catálogo | Servicios, categorías, recursos |
-| 4 | Clientes | Customers + tags |
+| ✅ 4 | Clientes | Customers + tags |
 | 5 | Turnos (corazón) | Appointments + disponibilidad + recurrencia |
 | 6 | Pagos | Mercado Pago (señas + suscripciones) |
 | 7 | Portal público | Endpoints sin auth para reservar online |
@@ -412,21 +421,30 @@ npx nest g resource modules/resources
 
 ---
 
-## 👤 FASE 4 — Clientes
+## ✅ FASE 4 — Clientes
 
-Migración: `Customer`, `CustomerTag`, `CustomerTagAssignment`.
+Migración `20260819162013_customers`: `Customer`, `CustomerTag`, `CustomerTagAssignment`.
 
-```bash
-npx prisma migrate dev --name customers
-npx nest g resource modules/customers
-npx nest g resource modules/customer-tags
-```
+**Duplicados: se rechaza, no se fusiona.** La pregunta que quedaba abierta acá era
+si un `phone` repetido debía hacer merge automático o rechazar. Se decidió
+rechazar: `POST /customers` devuelve **409** con la ficha existente en
+`existingCustomer`, y el mostrador decide si es la misma persona. El merge
+silencioso es cómodo hasta que dos personas comparten teléfono (una madre y su
+hija, una pareja) y une dos historiales que nadie pidió unir. El flag
+`wasMerged` que figuraba en el plan original nunca llegó a existir.
 
-- Índices `(tenant_id, phone)` y `(tenant_id, email)` para detectar duplicados.
-- `POST /customers` — si llega un `phone` que ya existe en el tenant, devolver el existente con un flag `wasMerged: true` (decisión pendiente: ¿merge automático o rechazar?).
-- Endpoints de búsqueda con paginación (`GET /customers?search=...&page=...`).
+**La comparación va sobre `phone_normalized`, no sobre `phone`.** Solo los
+dígitos, y de esos los últimos 10 (`src/common/utils/phone.util.ts`): así
+`+54 9 11 5555-1234` y `11 5555-1234` son el mismo cliente. El crudo se guarda
+igual, porque es el que se muestra y el que se marca. El unique es un índice
+**parcial** sobre los no borrados, así que dar de baja una ficha libera el
+número.
 
-**✅ Done cuando:** búsqueda fluida, no se duplican clientes con el mismo teléfono.
+- Índice único parcial `(tenant_id, phone_normalized)` e índice común `(tenant_id, email)`. El email **no** es único a propósito: compartir casilla es normal.
+- `GET /customers?search=&tagId=&page=&pageSize=` — la búsqueda cruza nombre, apellido, email y teléfono normalizado a la vez. Con varias palabras, todas tienen que aparecer en el nombre completo en cualquier orden ("gonzález maría" encuentra a María González).
+- Paginación por offset en `src/common/dto/pagination.dto.ts`, compartida con las fases que vienen.
+
+**✅ Done:** búsqueda fluida, no se duplican clientes con el mismo teléfono.
 
 ---
 

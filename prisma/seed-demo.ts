@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { EmployeeRole, PrismaClient, SubscriptionStatus } from '@prisma/client';
 import * as argon2 from 'argon2';
+import { normalizePhone } from '../src/common/utils/phone.util';
 
 /**
  * Datos de demo para desarrollar el frontend sin tener que crear todo a mano.
@@ -372,6 +373,66 @@ async function main(): Promise<void> {
         },
       });
 
+      // ── Clientes ──────────────────────────────────────────────────────
+      // Los teléfonos van escritos de tres formas distintas a propósito: es lo
+      // que pasa en la vida real y lo que el front tiene que poder buscar.
+      // `phoneNormalized` es lo que compara la base; acá se calcula a mano
+      // porque el seed no pasa por el service.
+      const vip = await tx.customerTag.create({
+        data: { tenantId: tenant.id, name: 'VIP', color: '#7C3AED' },
+        select: { id: true },
+      });
+
+      await tx.customerTag.create({
+        data: { tenantId: tenant.id, name: 'Debe seña', color: '#DB2777' },
+      });
+
+      const clientas = await Promise.all(
+        [
+          {
+            firstName: 'Sofía',
+            lastName: 'Ramírez',
+            phone: '+54 9 11 4123-5566',
+            email: 'sofia.ramirez@demo.test',
+            dateOfBirth: new Date('1988-03-14T00:00:00.000Z'),
+            notes: 'Viene siempre con su hija. Prefiere turnos temprano.',
+          },
+          {
+            firstName: 'Julieta',
+            lastName: 'Moreno',
+            phone: '(011) 4777-8899',
+            email: null,
+            dateOfBirth: null,
+            notes: null,
+          },
+          {
+            firstName: 'Carolina',
+            lastName: 'Duarte',
+            phone: '11 5030-2211',
+            email: 'caro.duarte@demo.test',
+            dateOfBirth: new Date('1995-11-02T00:00:00.000Z'),
+            notes: 'Alérgica al amoníaco: usar línea sin amoníaco.',
+          },
+        ].map((data) =>
+          tx.customer.create({
+            data: {
+              ...data,
+              tenantId: tenant.id,
+              phoneNormalized: normalizePhone(data.phone),
+            },
+            select: { id: true },
+          }),
+        ),
+      );
+
+      await tx.customerTagAssignment.create({
+        data: {
+          tenantId: tenant.id,
+          customerId: clientas[0].id,
+          tagId: vip.id,
+        },
+      });
+
       return { tenantId: tenant.id, pendingEmployeeId: pending.id };
     },
   );
@@ -406,6 +467,7 @@ async function main(): Promise<void> {
 
    2 sucursales con horario cargado · 1 feriado · turno partido · 1 ausencia
    2 categorías · 2 servicios · 2 recursos · 1 servicio que requiere sala
+   3 clientas (teléfonos escritos de tres formas) · 2 etiquetas · 1 VIP
 
    Link para probar la pantalla de activación:
    ${activationUrl}

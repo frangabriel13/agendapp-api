@@ -11,6 +11,9 @@ import { ZodError } from 'zod';
 import { TenantContextMissingError } from '../errors/tenant-context-missing.error';
 import type { Request, Response } from 'express';
 
+/** Claves que arma este filtro y que un service no puede pisar desde el cuerpo. */
+const RESERVED_KEYS = new Set(['statusCode', 'message', 'error']);
+
 interface ErrorResponseBody {
   statusCode: number;
   message: string | string[];
@@ -18,6 +21,13 @@ interface ErrorResponseBody {
   path: string;
   timestamp: string;
   requestId?: string;
+
+  /**
+   * Datos extra que un service adjuntó al error para que el front pueda actuar
+   * sobre él. Hoy lo usa el 409 de `POST /customers`, que manda la ficha ya
+   * existente para poder ofrecer "¿es esta persona?" en vez de un cartel rojo.
+   */
+  [key: string]: unknown;
 }
 
 @Catch()
@@ -77,6 +87,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
             exception.message);
       return {
         ...base,
+        ...extraFields(response),
         statusCode: status,
         message,
         error: HttpStatus[status] ?? 'Error',
@@ -173,4 +184,25 @@ export class AllExceptionsFilter implements ExceptionFilter {
         };
     }
   }
+}
+
+/**
+ * Lo que un service puso en el cuerpo del error además del mensaje.
+ *
+ * Un `throw new ConflictException({ message, existingCustomer })` trae ese
+ * `existingCustomer`; sin esto se perdería, porque el filtro arma la respuesta
+ * desde cero y solo miraba `message`.
+ *
+ * Las claves que arma el propio filtro se descartan: se recalculan igual
+ * después del spread, y dejarlas pasar significaría que un service puede mentir
+ * sobre el status del error que él mismo lanzó.
+ */
+function extraFields(response: string | object): Record<string, unknown> {
+  if (typeof response !== 'object') {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(response).filter(([key]) => !RESERVED_KEYS.has(key)),
+  );
 }
