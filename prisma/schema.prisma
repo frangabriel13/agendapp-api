@@ -80,9 +80,10 @@ model User {
   updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz
   deletedAt       DateTime? @map("deleted_at") @db.Timestamptz
 
-  refreshTokens RefreshToken[]
-  ownedTenant   Tenant?
-  employee      Employee?
+  refreshTokens       RefreshToken[]
+  ownedTenant         Tenant?
+  employee            Employee?
+  createdAppointments Appointment[]
 
   @@map("users")
 }
@@ -203,6 +204,10 @@ model Tenant {
   customers           Customer[]
   customerTags        CustomerTag[]
   customerTagLinks    CustomerTagAssignment[]
+  appointments        Appointment[]
+  appointmentServices AppointmentService[]
+  appointmentResource AppointmentResource[]
+  recurrenceGroups    RecurrenceGroup[]
 
   @@index([planId])
   @@map("tenants")
@@ -272,6 +277,7 @@ model Branch {
   employeeTimeOff   EmployeeTimeOff[]
   employeeServices  EmployeeService[]
   resources         Resource[]
+  appointments      Appointment[]
 
   @@index([tenantId])
   @@map("branches")
@@ -358,11 +364,12 @@ model Employee {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
 
-  branches    EmployeeBranch[]
-  schedules   EmployeeSchedule[]
-  timeOff     EmployeeTimeOff[]
-  invitations EmployeeInvitation[]
-  services    EmployeeService[]
+  branches     EmployeeBranch[]
+  schedules    EmployeeSchedule[]
+  timeOff      EmployeeTimeOff[]
+  invitations  EmployeeInvitation[]
+  services     EmployeeService[]
+  appointments Appointment[]
 
   @@index([tenantId])
   @@map("employees")
@@ -508,8 +515,9 @@ model Service {
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   category ServiceCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
 
-  employeeServices EmployeeService[]
-  serviceResources ServiceResource[]
+  employeeServices    EmployeeService[]
+  serviceResources    ServiceResource[]
+  appointmentServices AppointmentService[]
 
   @@index([tenantId])
   @@index([categoryId])
@@ -550,7 +558,8 @@ model Resource {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
-  serviceResources ServiceResource[]
+  serviceResources     ServiceResource[]
+  appointmentResources AppointmentResource[]
 
   @@index([tenantId])
   @@index([branchId])
@@ -608,6 +617,7 @@ model Customer {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   tagAssignments CustomerTagAssignment[]
+  appointments   Appointment[]
 
   @@index([tenantId])
   @@index([tenantId, phoneNormalized])
@@ -651,4 +661,174 @@ model CustomerTagAssignment {
   @@index([tenantId])
   @@index([tagId])
   @@map("customer_tag_assignments")
+}
+
+// ─────────────────────────────── Fase 5: turnos ─────────────────────────────
+
+/// Estados de un turno. Los tres últimos son terminales.
+///
+/// Los que NO bloquean la agenda (`canceled_*` y `rescheduled`) están agrupados
+/// en `NON_BLOCKING_STATUSES` (`src/modules/appointments/availability.ts`) y en
+/// el `WHERE` de los EXCLUDE de la migración. **Los dos tienen que decir lo
+/// mismo**: si se agrega un estado, hay que tocar los dos lados.
+enum AppointmentStatus {
+  PENDING_PAYMENT      @map("pending_payment")
+  CONFIRMED            @map("confirmed")
+  ATTENDED             @map("attended")
+  NO_SHOW              @map("no_show")
+  CANCELED_BY_CUSTOMER @map("canceled_by_customer")
+  CANCELED_BY_BUSINESS @map("canceled_by_business")
+  RESCHEDULED          @map("rescheduled")
+
+  @@map("appointment_status")
+}
+
+/// De dónde salió el turno. `PUBLIC_BOOKING` lo va a usar el portal (Fase 7).
+enum AppointmentSource {
+  ADMIN          @map("admin")
+  PUBLIC_BOOKING @map("public_booking")
+  RECURRING      @map("recurring")
+
+  @@map("appointment_source")
+}
+
+enum RecurrenceFrequency {
+  WEEKLY   @map("weekly")
+  BIWEEKLY @map("biweekly")
+  MONTHLY  @map("monthly")
+
+  @@map("recurrence_frequency")
+}
+
+/// Un turno.
+///
+/// `startsAt`/`endsAt` son instantes (`TIMESTAMPTZ`), no hora de pared: la hora
+/// que ve el negocio sale de convertirlos a `Tenant.timezone`. `endsAt` incluye
+/// el `bufferAfterMinutes` del servicio, porque el profesional sigue ocupado
+/// durante el buffer.
+///
+/// El doble-booking lo impide un EXCLUDE constraint de Postgres sobre
+/// `(employee_id, tstzrange(starts_at, ends_at))`, no el código: dos requests
+/// simultáneas al mismo slot pasan las dos la validación previa, y solo la base
+/// puede desempatar. Ver la migración.
+model Appointment {
+  id                 String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String            @map("tenant_id") @db.Uuid
+  branchId           String            @map("branch_id") @db.Uuid
+  employeeId         String            @map("employee_id") @db.Uuid
+  customerId         String            @map("customer_id") @db.Uuid
+  startsAt           DateTime          @map("starts_at") @db.Timestamptz
+  endsAt             DateTime          @map("ends_at") @db.Timestamptz
+  status             AppointmentStatus @default(CONFIRMED)
+  totalPriceCents    Int               @map("total_price_cents")
+  depositAmountCents Int?              @map("deposit_amount_cents")
+  depositPaid        Boolean           @default(false) @map("deposit_paid")
+  notes              String?           @db.Text
+  createdByUserId    String?           @map("created_by_user_id") @db.Uuid
+  createdVia         AppointmentSource @default(ADMIN) @map("created_via")
+  recurrenceGroupId  String?           @map("recurrence_group_id") @db.Uuid
+  canceledAt         DateTime?         @map("canceled_at") @db.Timestamptz
+  cancellationReason String?           @map("cancellation_reason") @db.Text
+  createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime          @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt          DateTime?         @map("deleted_at") @db.Timestamptz
+
+  /// Apunta al turno que este reemplaza. El sentido inverso (`rescheduledTo`)
+  /// es la back-reference, NO una segunda columna: el modelo conceptual lista
+  /// las dos, pero guardar los dos punteros deja abierta la posibilidad de que
+  /// se contradigan. Con uno solo, la relación es consistente por construcción.
+  rescheduledFromId String? @unique @map("rescheduled_from_id") @db.Uuid
+
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch          Branch           @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  employee        Employee         @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  customer        Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  createdBy       User?            @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  recurrenceGroup RecurrenceGroup? @relation(fields: [recurrenceGroupId], references: [id], onDelete: SetNull)
+
+  rescheduledFrom Appointment? @relation("Reschedule", fields: [rescheduledFromId], references: [id], onDelete: SetNull)
+  rescheduledTo   Appointment? @relation("Reschedule")
+
+  services  AppointmentService[]
+  resources AppointmentResource[]
+
+  @@index([tenantId, startsAt])
+  @@index([employeeId, startsAt])
+  @@index([branchId, startsAt])
+  @@index([customerId])
+  @@index([recurrenceGroupId])
+  @@map("appointments")
+}
+
+/// Los servicios que incluye un turno.
+///
+/// `durationMinutes` y `priceCents` son un **snapshot** del servicio al momento
+/// de reservar, no una FK al valor de hoy: si mañana sube el precio, el turno de
+/// ayer tiene que seguir valiendo lo que valía. Por eso tampoco alcanza con
+/// leerlos por la relación.
+model AppointmentService {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  appointmentId   String   @map("appointment_id") @db.Uuid
+  serviceId       String   @map("service_id") @db.Uuid
+  durationMinutes Int      @map("duration_minutes")
+  priceCents      Int      @map("price_cents")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  service     Service     @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+
+  @@unique([appointmentId, serviceId])
+  @@index([tenantId])
+  @@index([serviceId])
+  @@map("appointment_services")
+}
+
+/// Los recursos que ocupa un turno (la sala, la camilla).
+///
+/// **`startsAt`, `endsAt` y `blocksSlot` son copia de los del turno.** Están
+/// acá porque un EXCLUDE constraint no puede leer otra tabla: Postgres no
+/// admite subqueries en un índice. Sin la copia no hay forma de impedir a nivel
+/// base que dos turnos solapados reserven la misma sala.
+///
+/// El precio de eso es que se pueden desincronizar, así que **hay un solo lugar
+/// que las escribe**: `AppointmentsService.syncResourceMirror`. Cualquier cambio
+/// de horario o de estado del turno tiene que pasar por ahí.
+model AppointmentResource {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  appointmentId String   @map("appointment_id") @db.Uuid
+  resourceId    String   @map("resource_id") @db.Uuid
+  startsAt      DateTime @map("starts_at") @db.Timestamptz
+  endsAt        DateTime @map("ends_at") @db.Timestamptz
+  blocksSlot    Boolean  @default(true) @map("blocks_slot")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  resource    Resource    @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+
+  @@unique([appointmentId, resourceId])
+  @@index([tenantId])
+  @@index([resourceId, startsAt])
+  @@map("appointment_resources")
+}
+
+/// La regla de una serie de turnos repetidos. Los turnos se generan de a uno y
+/// quedan atados por `recurrenceGroupId`; borrar el grupo no los borra.
+model RecurrenceGroup {
+  id          String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String              @map("tenant_id") @db.Uuid
+  frequency   RecurrenceFrequency
+  dayOfWeek   Int?                @map("day_of_week") @db.SmallInt
+  occurrences Int
+  createdAt   DateTime            @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  appointments Appointment[]
+
+  @@index([tenantId])
+  @@map("recurrence_groups")
 }

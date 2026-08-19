@@ -17,6 +17,7 @@ import {
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { RolesGuard } from './common/guards/roles.guard';
 import { PrismaModule } from './prisma/prisma.module';
+import { AppointmentsModule } from './modules/appointments/appointments.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BranchesModule } from './modules/branches/branches.module';
 import { CustomerTagsModule } from './modules/customer-tags/customer-tags.module';
@@ -80,6 +81,7 @@ import type { Env } from './config/env.schema';
     ResourcesModule,
     CustomersModule,
     CustomerTagsModule,
+    AppointmentsModule,
   ],
   controllers: [],
   providers: [
