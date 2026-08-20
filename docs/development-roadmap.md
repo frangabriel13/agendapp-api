@@ -86,15 +86,17 @@
 2. **`forgot-password` responde 204 exista o no la cuenta.** Contestar distinto lo convertiría en un enumerador de emails registrados que no necesita credenciales. Lo que la respuesta uniforme no tapa es el tiempo; eso lo acota el throttle de 5/min y lo cierra del todo la cola.
 3. **El propósito del token es parte de lo que se valida.** Si no lo fuera, el link de verificación —que se manda solo, sin que nadie lo pida— serviría para cambiar la contraseña.
 
-**Pagos (Fase 6) — tramo 1: modelos y proveedor**
+**Pagos (Fase 6) — tramos 1 y 2: modelos, proveedor y cobros de turnos**
 
 - ✅ Migración `20260820182921_payments`: `AppointmentPayment`, `SubscriptionPayment` y sus tres enums, con `mp_payment_id` UNIQUE (idempotencia del webhook) y los CHECK de monto, moneda, coherencia `status`/`paid_at` y método vs. id de MP.
 - ✅ `PaymentProvider` con dos implementaciones: `MercadoPagoProvider` (HTTP directo, sin SDK) y `SandboxPaymentProvider` (el default, y el modo de desarrollo: cada checkout deja un pago aprobado esperando).
 - ✅ `payment-balance.ts`: la única definición de "cuánto pagó", como función pura.
+- ✅ **Cuatro endpoints**: saldo del turno, checkout online, webhook y pago manual (incluidas devoluciones en el mostrador).
+- ✅ **El webhook es idempotente de verdad**, con test: el mismo aviso dos veces —y dos avisos simultáneos— dejan una sola fila y el mismo saldo.
 - ✅ La app no levanta si `PAYMENT_PROVIDER=mercadopago` y falta el token o el secreto de webhook.
-- ⏭️ Falta: los endpoints (tramo 2) y las suscripciones (tramo 3).
+- ⏭️ Falta: las suscripciones (tramo 3) y la devolución automática.
 
-- ✅ Total del repo: **427 tests unitarios + 331 e2e**, 80 endpoints.
+- ✅ Total del repo: **427 tests unitarios + 360 e2e**, 84 endpoints.
 
 **Tres cosas que la Fase 6 y el portal van a dar por sentadas**
 
@@ -657,11 +659,47 @@ firmada hace horas y la rechazamos por vieja, **se pierde un pago**.
 > fijado). Nadie lo probó todavía contra un webhook de verdad. Es lo primero a
 > confirmar cuando haya credenciales.
 
-### 6.3 Endpoints
+### ✅ 6.3 Endpoints
 
-- `POST /appointments/:id/payments/checkout` — crea preferencia MP para la seña, devuelve `init_point`.
-- `POST /webhooks/mercadopago` (público, firma verificada) — actualiza `AppointmentPayment.status` y avanza el `Appointment` de `pending_payment` a `confirmed`.
-- `POST /appointments/:id/payments/manual` — para pagos en efectivo/transferencia desde el panel (registra `recorded_by_user_id`).
+- `GET /appointments/:id/payments` — los pagos del turno y el saldo que dejan. **Se sumó al plan**: sin esto el panel no tiene de dónde sacar cuánto se pagó, y el front terminaría recalculándolo mal.
+- `POST /appointments/:id/payments/checkout` — crea el cobro pendiente y devuelve el link. Pedirlo dos veces por el mismo concepto y monto **devuelve el mismo link** (`reused: true`) en vez de generar otro cobro vivo.
+- `POST /webhooks/mercadopago` — público, firma verificada antes de tocar la base.
+- `POST /appointments/:id/payments/manual` — efectivo, transferencia y **devoluciones** en el mostrador. Nace acreditado y guarda `recorded_by_user_id`.
+
+**Qué códigos devuelve el webhook y por qué.** MP reintenta ante cualquier
+respuesta que no sea 2xx, así que un error solo tiene sentido cuando reintentar
+puede servir:
+
+| Situación | Código | Motivo |
+|---|---|---|
+| Firma inválida | 401 | No es un aviso legítimo que salió mal: es uno que no vino de quien dice |
+| El proveedor no contestó | 502 | Es lo único que reintentar puede arreglar |
+| El aviso no es de un pago | 200 | MP manda avisos de otras cosas por el mismo endpoint |
+| El pago no está en la base | 200 | Reintentarlo no lo va a encontrar |
+
+**Dónde vive la lógica de confirmar el turno.** En `AppointmentsService`
+(`syncPaymentState`), no en pagos. El estado de un turno lo escribe el service
+de turnos, incluso cuando el disparador es un cobro: duplicarlo del lado de
+pagos dejaría el espejo de recursos y la máquina de estados fuera de su único
+dueño. La dependencia va en un solo sentido — turnos no sabe que existen los
+pagos.
+
+**El estado del turno solo avanza.** Una seña cubierta confirma un turno que
+estaba esperando el pago; una devolución **no lo des-confirma**. Volver atrás no
+es una transición válida, y hacerlo en silencio sería peor que el problema: el
+turno sigue ocupando su lugar en la agenda, y qué hacer con eso lo decide el
+negocio cancelándolo. `depositPaid` sí sigue al saldo en los dos sentidos: es un
+dato, no un estado.
+
+**Sin `@Roles`.** Registrar plata no es configurar el negocio, es trabajo de
+mostrador, y en una peluquería chica la persona que atiende es la que cobra. El
+control no es restringir quién puede sino que quede asentado **quién lo hizo**
+(`recordedBy`).
+
+⏭️ **Falta la devolución automática**: hoy se puede *registrar* que se devolvió
+plata, pero no ordenarle a MP que la devuelva. `resolveRefund` (Fase 5) ya
+calcula cuánto corresponde al cancelar; conectar eso con la API de refunds es
+trabajo pendiente.
 
 ### 6.4 Suscripciones
 
