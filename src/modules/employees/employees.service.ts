@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { TenantContextMissingError } from '../../common/errors/tenant-context-missing.error';
+import { MailService } from '../../common/mail';
 import { TenantContextService } from '../../common/tenant-context';
 import {
   dateToDateOnly,
@@ -107,6 +108,7 @@ export class EmployeesService {
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
     private readonly invitations: EmployeeInvitationService,
+    private readonly mail: MailService,
   ) {}
 
   /**
@@ -182,13 +184,20 @@ export class EmployeesService {
         throw error;
       });
 
+    const activationUrl = this.invitations.buildActivationUrl(
+      invitationId,
+      invitation.secret,
+    );
+
     return {
       employee: toEmployeeResponse(employee),
-      activationUrl: this.invitations.buildActivationUrl(
-        invitationId,
-        invitation.secret,
-      ),
+      activationUrl,
       expiresAt: invitation.expiresAt,
+      emailSent: await this.sendInvitationEmail(
+        employee.user,
+        activationUrl,
+        invitation.expiresAt,
+      ),
     };
   }
 
@@ -229,14 +238,52 @@ export class EmployeesService {
       return row.id;
     });
 
+    const activationUrl = this.invitations.buildActivationUrl(
+      invitationId,
+      invitation.secret,
+    );
+
     return {
       employee: toEmployeeResponse(employee),
-      activationUrl: this.invitations.buildActivationUrl(
-        invitationId,
-        invitation.secret,
-      ),
+      activationUrl,
       expiresAt: invitation.expiresAt,
+      emailSent: await this.sendInvitationEmail(
+        employee.user,
+        activationUrl,
+        invitation.expiresAt,
+      ),
     };
+  }
+
+  /**
+   * Le manda el link al empleado. Devuelve si el mail salió.
+   *
+   * El link viaja igual en la respuesta, así que un proveedor caído no deja al
+   * empleado sin forma de activarse: solo obliga al dueño a pasárselo por otro
+   * lado. Por eso esto informa y no lanza — el alta ya está hecha y volverla
+   * atrás porque no salió un mail sería peor.
+   */
+  private async sendInvitationEmail(
+    user: { email: string; firstName: string },
+    activationUrl: string,
+    expiresAt: Date,
+  ): Promise<boolean> {
+    const tenantId = this.requireTenantId('sendInvitationEmail');
+
+    // Cliente base: `Tenant` está exento del scoping (él ES el tenant), así que
+    // `scoped` no agregaría ningún filtro y sí confundiría al que lea esto.
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { businessName: true },
+    });
+
+    return this.mail.sendEmployeeInvitation({
+      to: user.email,
+      firstName: user.firstName,
+      businessName: tenant?.businessName ?? 'AgendApp',
+      url: activationUrl,
+      expiresAt,
+    });
   }
 
   async findAll(query: ListEmployeesQueryDto): Promise<EmployeeResponseDto[]> {

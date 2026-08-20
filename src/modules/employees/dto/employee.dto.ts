@@ -92,6 +92,14 @@ export class EmployeeInvitationResponseDto {
 
   @ApiProperty({ description: 'Cuándo deja de servir el link.' })
   expiresAt!: Date;
+
+  @ApiProperty({
+    description:
+      'Si el mail con el link salió. En `false` el alta igual se hizo: el ' +
+      'link de `activationUrl` sigue siendo válido y hay que hacérselo llegar ' +
+      'al empleado por otro medio.',
+  })
+  emailSent!: boolean;
 }
 
 export class InviteEmployeeDto {

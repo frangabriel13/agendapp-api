@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EmployeeRole } from '@prisma/client';
+import type { MailService } from '../../common/mail';
 import type { TenantContextService } from '../../common/tenant-context';
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { EmployeeInvitationService } from './employee-invitations.service';
@@ -48,6 +49,7 @@ describe('EmployeesService', () => {
   let service: EmployeesService;
   let prisma: {
     user: { findFirst: jest.Mock; create: jest.Mock; update: jest.Mock };
+    tenant: { findUnique: jest.Mock };
     scoped: {
       user: { findFirst: jest.Mock; create: jest.Mock; update: jest.Mock };
       $transaction: jest.Mock;
@@ -83,6 +85,7 @@ describe('EmployeesService', () => {
   };
   let tenantContext: { getTenantId: jest.Mock; getEmployeeId: jest.Mock };
   let invitations: { mint: jest.Mock; buildActivationUrl: jest.Mock };
+  let mail: { sendEmployeeInvitation: jest.Mock };
 
   function planWith(maxEmployees: number | null, name = 'Pro'): void {
     prisma.scoped.tenant.findFirst.mockResolvedValue({
@@ -109,6 +112,10 @@ describe('EmployeesService', () => {
 
     prisma = {
       user,
+      // Cliente base: de acá sale el nombre del negocio para el mail.
+      tenant: {
+        findUnique: jest.fn().mockResolvedValue({ businessName: 'Peluquería' }),
+      },
       scoped: {
         user,
         $transaction: jest.fn((callback: (tx: unknown) => unknown) =>
@@ -159,12 +166,14 @@ describe('EmployeesService', () => {
       }),
       buildActivationUrl: jest.fn().mockReturnValue('https://app.test/activar'),
     };
+    mail = { sendEmployeeInvitation: jest.fn().mockResolvedValue(true) };
     planWith(null);
 
     service = new EmployeesService(
       prisma as unknown as PrismaService,
       tenantContext as unknown as TenantContextService,
       invitations as unknown as EmployeeInvitationService,
+      mail as unknown as MailService,
     );
   });
 

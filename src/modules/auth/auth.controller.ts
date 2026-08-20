@@ -8,6 +8,7 @@ import {
   Post,
 } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiBearerAuth,
   ApiConflictResponse,
   ApiCreatedResponse,
@@ -25,6 +26,11 @@ import { AuthTokensDto } from './dto/auth-tokens.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { MeResponseDto } from './dto/me-response.dto';
+import {
+  ForgotPasswordDto,
+  ResetPasswordDto,
+  VerifyEmailDto,
+} from './dto/password-reset.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterDto } from './dto/register.dto';
 import type { AuthenticatedUser } from './types/jwt-payload';
@@ -98,6 +104,63 @@ export class AuthController {
   @ApiUnauthorizedResponse({ description: 'Token ausente, vencido o inválido' })
   me(@CurrentUser() user: AuthenticatedUser): Promise<MeResponseDto> {
     return this.authService.me(user);
+  }
+
+  @Post('forgot-password')
+  @Public()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Throttle(CREDENTIALS_THROTTLE)
+  @ApiOperation({
+    summary: 'Pide el link para restablecer la contraseña',
+    description:
+      'Responde 204 exista o no la cuenta, a propósito: contestar distinto ' +
+      'convertiría el endpoint en un enumerador de emails registrados. Emitir ' +
+      'un link nuevo revoca el anterior.',
+  })
+  @ApiNoContentResponse()
+  forgotPassword(@Body() dto: ForgotPasswordDto): Promise<void> {
+    return this.authService.forgotPassword(dto);
+  }
+
+  @Post('reset-password')
+  @Public()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Throttle(CREDENTIALS_THROTTLE)
+  @ApiOperation({
+    summary: 'Canjea el link y deja una contraseña nueva',
+    description:
+      'El token sirve una sola vez. Cierra todas las sesiones abiertas del usuario.',
+  })
+  @ApiNoContentResponse()
+  @ApiBadRequestResponse({ description: 'El link no es válido o ya venció' })
+  resetPassword(@Body() dto: ResetPasswordDto): Promise<void> {
+    return this.authService.resetPassword(dto);
+  }
+
+  @Post('verify-email')
+  @Public()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Throttle(CREDENTIALS_THROTTLE)
+  @ApiOperation({
+    summary: 'Confirma la casilla con el link que llegó por mail',
+  })
+  @ApiNoContentResponse()
+  @ApiBadRequestResponse({ description: 'El link no es válido o ya venció' })
+  verifyEmail(@Body() dto: VerifyEmailDto): Promise<void> {
+    return this.authService.verifyEmail(dto);
+  }
+
+  @Post('verify-email/resend')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Throttle(CREDENTIALS_THROTTLE)
+  @ApiOperation({ summary: 'Reenvía el mail de verificación' })
+  @ApiNoContentResponse()
+  @ApiConflictResponse({ description: 'El email ya está confirmado' })
+  resendEmailVerification(
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<void> {
+    return this.authService.resendEmailVerification(user);
   }
 
   @Patch('password')

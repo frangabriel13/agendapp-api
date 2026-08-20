@@ -5,7 +5,9 @@ import { ThrottlerGuard } from '@nestjs/throttler';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import { AppModule } from '../../src/app.module';
+import { MAIL_PROVIDER } from '../../src/common/mail';
 import { PrismaService } from '../../src/prisma/prisma.service';
+import { RecordingMailProvider } from './recording-mail.provider';
 
 /** La app tipada con el server de supertest: sin esto `getHttpServer()` es `any`. */
 export type TestApp = INestApplication<App>;
@@ -13,6 +15,8 @@ export type TestApp = INestApplication<App>;
 export interface E2EContext {
   app: TestApp;
   prisma: PrismaService;
+  /** La casilla donde caen los mails en vez de salir. */
+  mail: RecordingMailProvider;
 }
 
 /** Contraseña válida según las reglas del DTO (8+, con letra y número). */
@@ -23,21 +27,28 @@ export const TEST_PASSWORD = 'Password123!';
  * excepciones y los mismos guards globales que en producción (por eso el pipe y
  * el filtro se registran en `AppModule` y no en `main.ts`).
  *
- * Lo único que se desactiva es el rate limiting: los tests hacen decenas de
- * registros y logins por minuto y el límite real es de 5. Que el throttler
- * funcione se prueba aparte (Fase 9), no acá.
+ * Se desactivan dos cosas. El rate limiting: los tests hacen decenas de
+ * registros y logins por minuto y el límite real es de 5 (que el throttler
+ * funcione se prueba aparte, Fase 9). Y el envío de mails, que se reemplaza por
+ * una casilla en memoria — de ahí salen los tokens de reset y verificación, que
+ * en la base están hasheados y no se pueden leer.
  */
 export async function createTestApp(): Promise<E2EContext> {
   jest.spyOn(ThrottlerGuard.prototype, 'canActivate').mockResolvedValue(true);
 
+  const mail = new RecordingMailProvider();
+
   const moduleRef = await Test.createTestingModule({
     imports: [AppModule],
-  }).compile();
+  })
+    .overrideProvider(MAIL_PROVIDER)
+    .useValue(mail)
+    .compile();
 
   const app = moduleRef.createNestApplication<TestApp>({ logger: false });
   await app.init();
 
-  return { app, prisma: app.get(PrismaService) };
+  return { app, prisma: app.get(PrismaService), mail };
 }
 
 /**

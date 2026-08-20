@@ -8,7 +8,7 @@
 
 ## 📌 Estado actual del repo
 
-> **Fases 0 a 5 cerradas.** El corazón del sistema ya está: turnos, disponibilidad y recurrencia. El próximo paso es la Fase 6 (pagos).
+> **Fases 0 a 5 cerradas, más los mails transaccionales.** El corazón del sistema ya está: turnos, disponibilidad y recurrencia. Los mails se adelantaron (estaban diferidos con deadline "antes de la Fase 7") porque su única deuda real —no poder recuperar una contraseña sin entrar a la base a mano— no convenía arrastrarla más. El próximo paso es la Fase 6 (pagos).
 
 **Cimientos (Fase 0)**
 
@@ -31,15 +31,15 @@
 - ✅ `@Public()` para abrir rutas (`/health` y auth pre-login) y `@Roles()` + `RolesGuard` global para autorizar por rol.
 - ✅ `TenantsModule`: `GET/PATCH /tenants/me`, `/tenants/me/branding` y `/tenants/me/settings`.
 - ✅ **45 tests e2e** sobre Postgres real (base dedicada `agendapp_test`), más 42 unitarios.
-- ⏭️ Diferido a propósito: emails transaccionales (reset de contraseña, verificación) — deadline antes de la Fase 7.
+- ✅ Emails transaccionales (reset de contraseña y verificación): estaban diferidos, se hicieron antes de la Fase 6. Ver el bloque más abajo.
 
 **Estructura del negocio (Fase 2)**
 
 - ✅ Migración `20260812112622_branches`: `Branch`, `BranchBusinessHour` y `BranchSpecialDay`, con los CHECK de horario y el índice único parcial de nombre por tenant.
 - ✅ `BranchesModule`: CRUD de sucursales con validación de `plan.maxBranches`, horario semanal (`PUT` que reemplaza los 7 días) y días especiales.
 - ✅ Migración `20260812122603_employees`: `EmployeeInvitation`, `EmployeeBranch`, `EmployeeSchedule` y `EmployeeTimeOff`; `Employee` completo y `users.password_hash` ahora nullable.
-- ✅ `EmployeesModule`: invitación con link de activación (sin email todavía), activación pública, permisos, sucursales asignadas, horario semanal con turno partido y ausencias.
-- ⏭️ Diferido: el envío del link por email (misma deadline que el resto de los mails, antes de la Fase 7). Hoy el link viaja en la respuesta de `POST /employees`.
+- ✅ `EmployeesModule`: invitación con link de activación, activación pública, permisos, sucursales asignadas, horario semanal con turno partido y ausencias.
+- ✅ El link de invitación **ahora también sale por mail**, y sigue viajando en la respuesta de `POST /employees` (ver `emailSent`): si el proveedor está caído, el dueño tiene con qué.
 
 **Catálogo (Fase 3)**
 
@@ -68,8 +68,25 @@
 - ✅ **`POST /appointments/:id/reschedule`** — crea un turno nuevo y deja el viejo en `rescheduled`, enlazados. Copia los servicios con el precio que tenían.
 - ✅ **`POST /appointments/recurring`** — series semanales, quincenales y mensuales. Las fechas se generan en calendario puro (`recurrence.ts`), así una serie que cruza un cambio de hora sigue cayendo a la misma hora de pared.
 - ✅ `GET /appointments?from=&to=` para el calendario, `GET /:id`, `PATCH /:id` (solo notas).
-- ✅ Total del repo: **354 tests unitarios + 309 e2e**.
 - ❌ Todavía sin RLS (Fase 8) ni pagos (Fase 6).
+
+**Mails transaccionales (adelantados de la deadline "antes de la Fase 7")**
+
+- ✅ Migración `20260820170603_user_tokens`: `UserToken` con enum `UserTokenPurpose` (`PASSWORD_RESET`, `EMAIL_VERIFICATION`). **Una sola tabla para los dos casos**: comparten forma (`<id>.<secret>`), un solo uso, vencimiento y la regla de que emitir uno nuevo revoca el anterior. `employee_invitations` queda aparte porque es otra cosa: apunta a un `Employee` y está scopeada por tenant.
+- ✅ Infraestructura de correo en `src/common/mail/` (módulo `@Global`, como `PrismaModule`): interfaz `MailProvider`, `LogMailProvider` (default, escribe los links en la consola) y `ResendMailProvider` (HTTP directo, sin SDK — mandar un mail es un `POST` y Node trae `fetch`).
+- ✅ `POST /auth/forgot-password` + `POST /auth/reset-password`. El reset cambia la contraseña y **cierra todas las sesiones en la misma transacción**: si el reset se pidió porque alguien más entró, dejarle la sesión viva lo volvería inútil.
+- ✅ `POST /auth/verify-email` + `POST /auth/verify-email/resend`. El registro manda el mail solo.
+- ✅ El link de invitación de empleados sale por mail, con el nombre del negocio en el asunto.
+- ✅ **31 tests nuevos** (12 unitarios + 22 e2e, incluido el flujo completo de reset leyendo el token del mail).
+- ⏭️ Sigue pendiente: sacar el envío del request y darle reintentos (BullMQ, Fase 8). Hoy se espera al proveedor con un timeout de 10 s.
+
+**Tres decisiones del correo que conviene no revisar sin motivo**
+
+1. **Un mail que falla nunca voltea el request.** `MailService` atrapa, loguea y devuelve `false`. Un proveedor de mail caído no puede impedir que se registre un negocio ni que se emita un token — eso sería mucho peor que un mail perdido. Por eso `POST /employees` devuelve `emailSent` y sigue trayendo `activationUrl`.
+2. **`forgot-password` responde 204 exista o no la cuenta.** Contestar distinto lo convertiría en un enumerador de emails registrados que no necesita credenciales. Lo que la respuesta uniforme no tapa es el tiempo; eso lo acota el throttle de 5/min y lo cierra del todo la cola.
+3. **El propósito del token es parte de lo que se valida.** Si no lo fuera, el link de verificación —que se manda solo, sin que nadie lo pida— serviría para cambiar la contraseña.
+
+- ✅ Total del repo: **366 tests unitarios + 331 e2e**, 80 endpoints.
 
 **Tres cosas que la Fase 6 y el portal van a dar por sentadas**
 
@@ -89,6 +106,7 @@
 | ✅ 3 | Catálogo | Servicios, categorías, recursos |
 | ✅ 4 | Clientes | Customers + tags |
 | ✅ 5 | Turnos (corazón) | Appointments + disponibilidad + recurrencia |
+| ✅ 1.7 | Mails transaccionales | Reset de contraseña, verificación, invitación por mail (venía diferido de la Fase 1) |
 | 6 | Pagos | Mercado Pago (señas + suscripciones) |
 | 7 | Portal público | Endpoints sin auth para reservar online |
 | 8 | Transversales finales | Notas, auditoría, RLS, jobs (BullMQ) |
@@ -316,22 +334,38 @@ que la real.
 
 **✅ Done cuando:** podés registrarte, recibir un token, llamar a `/auth/me` y ver tu tenant. Tests E2E del flujo completo.
 
-### ⏭️ Diferido — Emails transaccionales
+### ✅ 1.7 Emails transaccionales
 
-**Deadline: antes de la Fase 7 (portal público)**, no en la Fase 8. Lo único que
-bloquea esto es tener un proveedor de mail (Resend / SendGrid / SES) y un dominio
-con SPF/DKIM. **No** depende de BullMQ: la cola solo aporta reintentos y no
-bloquear la respuesta.
+Estaba diferido con deadline "antes de la Fase 7". Se hizo antes de la Fase 6
+porque la deuda que generaba era concreta: hasta que existiera el reset, a un
+usuario que olvidaba la clave había que cambiársela a mano en la base.
 
-- `POST /auth/forgot-password` + `POST /auth/reset-password` (tabla nueva `password_reset_tokens`).
-- `POST /auth/verify-email` + reenvío (el campo `users.email_verified_at` ya existe desde la Fase 1).
-- **Mandar por mail el link de invitación de empleados**, que hoy vuelve en la respuesta de `POST /employees`. Es sumar el envío, no rehacer el flujo: la tabla de tokens y el endpoint de activación ya son los definitivos.
+**La tabla salió una y no dos.** El plan decía `password_reset_tokens`, pero el
+reset y la verificación comparten todo lo que importa —forma `<id>.<secret>`, un
+solo uso, vencimiento, y que emitir uno nuevo revoque el anterior—, así que son
+`user_tokens` con un enum `purpose`. Lo único que cambia entre los dos es la vida
+útil y a qué pantalla del frontend apunta el link. Sumar un tercer caso (cambio
+de email, por ejemplo) es un valor del enum, no otra tabla.
 
-Cuando toque, el reset de contraseña puede reusar `opaque-token.util.ts` y copiar la forma de `employee_invitations`: token `<id>.<secret>`, hash argon2, un solo uso y vencimiento.
+`employee_invitations` **no** se absorbió: apunta a un `Employee` y está scopeada
+por tenant, mientras que `user_tokens` cuelga de `User`, que es global. Son dos
+cosas distintas con la misma forma.
 
-Posponerlo no genera deuda: no toca nada de lo construido en la Fase 1, solo suma
-una tabla y endpoints. El riesgo real es el **reset de contraseña** — hasta que
-exista, a un usuario que olvida la clave hay que cambiársela a mano en la base.
+- `POST /auth/forgot-password` + `POST /auth/reset-password`.
+- `POST /auth/verify-email` + `POST /auth/verify-email/resend`. El registro dispara el primer mail solo.
+- El link de invitación de empleados ahora sale por mail.
+
+**El proveedor es una interfaz** (`src/common/mail/`). El default es
+`LogMailProvider`, que no manda nada y escribe los links en la consola: arrancar
+el proyecto no debería exigir credenciales de nadie, y probar un reset en local
+tampoco. `ResendMailProvider` habla HTTP directo, sin SDK — mandar un mail es un
+`POST` con cuatro campos, y una dependencia para eso trae transitivas a cambio de
+nada. Para que los mails no caigan en spam hace falta un dominio verificado con
+SPF y DKIM; eso es configuración de infraestructura, no de este código.
+
+Lo que sigue pendiente es sacar el envío del request y darle reintentos: hoy se
+espera al proveedor con un timeout de 10 s. Es trabajo de la cola (BullMQ, Fase
+8) y cuando exista lo único que cambia es el cuerpo de `MailService.deliver`.
 
 ---
 

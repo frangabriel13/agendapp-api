@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { Prisma } from '@prisma/client';
 import type { Env } from '../../config/env.schema';
 import {
   buildOpaqueToken,
@@ -140,9 +141,19 @@ export class RefreshTokenService {
     });
   }
 
-  /** Revoca todas las sesiones del usuario (ej. tras cambiar la contraseña). */
-  async revokeAllForUser(userId: string): Promise<void> {
-    await this.prisma.refreshToken.updateMany({
+  /**
+   * Revoca todas las sesiones del usuario (ej. tras cambiar la contraseña).
+   *
+   * Acepta un cliente de transacción para que el reset de contraseña pueda
+   * cambiar la clave y cerrar las sesiones en una sola unidad: si se hicieran
+   * por separado y fallara la segunda, quedaría una contraseña nueva con las
+   * sesiones viejas abiertas — justo lo que un reset viene a evitar.
+   */
+  async revokeAllForUser(
+    userId: string,
+    client: Prisma.TransactionClient = this.prisma,
+  ): Promise<void> {
+    await client.refreshToken.updateMany({
       where: { userId, revokedAt: null },
       data: { revokedAt: new Date() },
     });

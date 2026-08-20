@@ -8,6 +8,7 @@ import { AuthService } from './auth.service';
 import { PasswordService } from './password.service';
 import { RefreshTokenService } from './refresh-token.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
+import { UserTokenService } from './user-token.service';
 
 @Module({
   imports: [
@@ -23,7 +24,13 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, PasswordService, RefreshTokenService, JwtStrategy],
+  providers: [
+    AuthService,
+    PasswordService,
+    RefreshTokenService,
+    UserTokenService,
+    JwtStrategy,
+  ],
   // `JwtAuthGuard` está montado como guard global en AppModule y resuelve la
   // estrategia 'jwt' que registra `JwtStrategy` acá.
   // `PasswordService` sale afuera para que la activación de un empleado hashee
