@@ -73,6 +73,27 @@ Tokens de refresh para JWT, con rotación y detección de reuso.
 - El token que recibe el cliente es `<id>.<secret>`: el `id` ubica la fila y el `secret` se verifica con argon2 contra `token_hash` (un hash con salt no se puede buscar por igualdad).
 - En cada refresh se revoca el token viejo y se emite uno nuevo con el mismo `family_id`. Si llega un token ya revocado, se revoca **toda la familia** (señal de robo de token).
 
+### `user_tokens`
+Tokens de un solo uso que se le mandan al usuario por mail: reset de contraseña y verificación de email.
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| `id` | UUID | PK — viaja dentro del token, igual que en `refresh_tokens` |
+| `user_id` | UUID | FK → users, `ON DELETE CASCADE` |
+| `purpose` | ENUM | `PASSWORD_RESET` \| `EMAIL_VERIFICATION` |
+| `token_hash` | VARCHAR | argon2 |
+| `expires_at` | TIMESTAMP | 60 min para el reset, 48 h para la verificación (configurables) |
+| `used_at` | TIMESTAMP | nullable — se sella al canjearlo |
+| `revoked_at` | TIMESTAMP | nullable — lo sella la emisión de un token nuevo del mismo propósito |
+| `created_at` | TIMESTAMP | |
+
+**Notas:**
+- **Una tabla para los dos casos, no dos.** Comparten forma (`<id>.<secret>`), un solo uso, vencimiento y la regla de que emitir uno nuevo revoca el anterior. Lo único que cambia es la vida útil y a qué pantalla del frontend apunta el link. Un tercer caso (cambio de email) sería un valor del enum.
+- **No lleva `tenant_id`**: cuelga de `users`, que es global. Está en `TENANT_EXEMPT_MODELS`, igual que `refresh_tokens`.
+- **No se absorbió `employee_invitations`**, que tiene la misma forma: esa apunta a un `Employee` y sí está scopeada por tenant. Misma forma, distinta cosa.
+- El `purpose` **se valida** al canjear, no es una etiqueta: si no, el link de verificación —que se manda solo, sin que nadie lo pida— serviría para cambiar la contraseña.
+- El uso único es a prueba de carreras: el canje hace `UPDATE ... WHERE used_at IS NULL` dentro de una transacción y exige que haya afectado exactamente una fila. Un `SELECT` seguido de un `UPDATE` dejaría pasar dos requests simultáneas.
+
 ---
 
 ## 🏢 2. Negocio (Tenant)

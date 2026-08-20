@@ -280,11 +280,11 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 
 ## Qué existe hoy y qué no
 
-**Disponible — 76 endpoints:**
+**Disponible — 80 endpoints:**
 
 | Área | Endpoints | Alcanza para |
 |---|---|---|
-| `/auth` | 6 | Toda la capa de sesión: registro, login, refresh, logout, perfil, cambio de contraseña |
+| `/auth` | 10 | Toda la capa de sesión: registro, login, refresh, logout, perfil, cambio de contraseña, **recuperar la contraseña olvidada y confirmar el email** |
 | `/tenants` | 6 | Configuración del negocio, branding (colores y logo), preferencias |
 | `/branches` | 11 | CRUD de sucursales, horario semanal, feriados y días especiales |
 | `/employees` | 13 | CRUD, invitación con link, activación pública, permisos, asignación a sucursales, horario con turno partido, ausencias |
@@ -504,12 +504,49 @@ estuvo tomada.
 
 ### Detalle sobre la invitación de empleados
 
-Todavía **no se mandan emails**. `POST /employees` devuelve el link de activación
-en la respuesta; hoy hay que copiarlo y pasarlo a mano. El endpoint
-`POST /employees/activate` es público y es donde el empleado define su contraseña.
+Ahora **el link se manda por mail solo**. `POST /employees` igual lo sigue
+devolviendo en `activationUrl`, y eso es a propósito y definitivo: la respuesta
+trae también `emailSent`, y cuando viene en `false` el alta se hizo pero el mail
+no salió. Ahí es donde la UI tiene que mostrar el link para copiar. Cuando viene
+en `true`, alcanza con decir "le mandamos un mail a ana@…".
 
-Cuando se implemente el envío por email (antes de la Fase 7), el link va a dejar de
-venir en la respuesta. Conviene no construir UI que dependa de mostrarlo.
+`POST /employees/activate` es público y es donde el empleado define su contraseña.
+La pantalla que lo recibe es `/activar?token=…`.
+
+### Tres pantallas nuevas que hay que construir
+
+Los mails ya salen, y los links que mandan apuntan al front. Son rutas que
+todavía no existen:
+
+| Ruta | Qué recibe | Qué hace |
+|---|---|---|
+| `/activar?token=` | Invitación de empleado | Pide contraseña → `POST /employees/activate` |
+| `/restablecer?token=` | Reset de contraseña | Pide contraseña nueva → `POST /auth/reset-password` |
+| `/verificar-email?token=` | Verificación de email | Llama sola a `POST /auth/verify-email` y muestra el resultado |
+
+Las tres reciben el token por query string, las tres son **públicas** (sin
+sesión) y las tres devuelven **400 con un mensaje ya escrito en castellano** si
+el link no sirve: mostralo tal cual. El token vale **una sola vez** — si el
+usuario recarga la página después de completar, el segundo intento da 400, así
+que conviene redirigir apenas sale bien en vez de dejarlo en la pantalla.
+
+**`POST /auth/forgot-password` siempre devuelve 204**, exista o no la cuenta.
+No es un detalle de implementación: la UI **no puede** decir "ese email no está
+registrado", porque justamente lo que se evita es que cualquiera averigüe qué
+emails tienen cuenta. El mensaje correcto es del tipo "si esa dirección tiene
+una cuenta, te mandamos el link". Pedirlo de nuevo invalida el link anterior.
+
+**Después de un reset, todas las sesiones se cierran.** El refresh token que
+tuviera guardado deja de servir: hay que mandar al login, no intentar refrescar.
+
+**`emailVerifiedAt`** viene en `GET /auth/me` dentro de `user`. En `null` = sin
+confirmar, y ahí tiene sentido un cartel con "reenviar" que llame a
+`POST /auth/verify-email/resend`. Hoy **no bloquea nada**: es informativo. Si ya
+estaba confirmado, el reenvío devuelve 409.
+
+**En desarrollo no sale ningún mail.** Con `MAIL_PROVIDER=log` (el default) el
+back escribe el link en su propia consola en vez de mandarlo. Para probar estas
+pantallas, el link se copia de ahí.
 
 ---
 

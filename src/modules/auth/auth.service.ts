@@ -7,7 +7,12 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { EmployeeRole, SubscriptionStatus } from '@prisma/client';
+import {
+  EmployeeRole,
+  SubscriptionStatus,
+  UserTokenPurpose,
+} from '@prisma/client';
+import { MailService } from '../../common/mail';
 import { isReservedSlug, slugify } from '../../common/utils/slug.util';
 import type { Env } from '../../config/env.schema';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -16,10 +21,16 @@ import type { AuthTokensDto } from './dto/auth-tokens.dto';
 import type { ChangePasswordDto } from './dto/change-password.dto';
 import type { LoginDto } from './dto/login.dto';
 import type { MeResponseDto } from './dto/me-response.dto';
+import type {
+  ForgotPasswordDto,
+  ResetPasswordDto,
+  VerifyEmailDto,
+} from './dto/password-reset.dto';
 import type { RegisterDto } from './dto/register.dto';
 import { PasswordService } from './password.service';
 import { RefreshTokenService } from './refresh-token.service';
 import type { AuthenticatedUser, JwtPayload } from './types/jwt-payload';
+import { UserTokenService } from './user-token.service';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -43,6 +54,8 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly passwords: PasswordService,
     private readonly refreshTokens: RefreshTokenService,
+    private readonly userTokens: UserTokenService,
+    private readonly mail: MailService,
     config: ConfigService<Env, true>,
   ) {
     this.trialDays = config.get('TRIAL_DAYS', { infer: true });
@@ -130,6 +143,14 @@ export class AuthService {
       await tx.tenantSettings.create({ data: { tenantId: tenant.id } });
 
       return { user: createdUser, employee: createdEmployee };
+    });
+
+    // Fuera de la transacción a propósito: el negocio ya está creado y no se
+    // deshace porque el mail no salga. `MailService` no lanza.
+    await this.sendVerificationEmail({
+      id: user.id,
+      email: dto.email,
+      firstName: dto.firstName,
     });
 
     return this.issueTokens(user.id, employee);
@@ -314,6 +335,132 @@ export class AuthService {
     });
 
     await this.refreshTokens.revokeAllForUser(user.id);
+  }
+
+  /**
+   * Manda el link para elegir una contraseña nueva.
+   *
+   * **Siempre responde igual**, exista o no la cuenta: si contestara distinto,
+   * el endpoint sería un enumerador de emails registrados que cualquiera puede
+   * usar sin credenciales.
+   *
+   * Lo que la respuesta uniforme NO tapa es el tiempo: el camino con cuenta
+   * hace hash, escribe la base y espera al proveedor de mail, así que tarda más
+   * que el otro. Lo que acota ese resto es el throttle de 5 intentos por
+   * minuto; cerrarlo del todo es sacar el envío del request, que es trabajo de
+   * la cola (Fase 8).
+   */
+  async forgotPassword(dto: ForgotPasswordDto): Promise<void> {
+    const user = await this.prisma.user.findFirst({
+      where: { email: dto.email, deletedAt: null },
+      select: { id: true, email: true, firstName: true, passwordHash: true },
+    });
+
+    // Un invitado que todavía no aceptó la invitación no tiene contraseña que
+    // restablecer: su camino es el link de activación. Mandarle un reset le
+    // daría una segunda forma de tomar la cuenta y confundiría el flujo.
+    if (!user || user.passwordHash === null) {
+      await this.passwords.burnTime();
+
+      return;
+    }
+
+    const { url, expiresAt } = await this.userTokens.issue(
+      user.id,
+      UserTokenPurpose.PASSWORD_RESET,
+    );
+
+    await this.mail.sendPasswordReset({
+      to: user.email,
+      firstName: user.firstName,
+      url,
+      expiresAt,
+    });
+  }
+
+  /**
+   * Canjea el link y deja la contraseña nueva.
+   *
+   * Cierra todas las sesiones abiertas **dentro de la misma transacción** que
+   * el cambio: si el reset se pidió porque alguien más entró a la cuenta,
+   * dejarle la sesión viva volvería inútil el cambio de contraseña.
+   *
+   * El hash se calcula antes de abrir la transacción: argon2 tarda cientos de
+   * milisegundos y no hay razón para tener la fila bloqueada mientras tanto.
+   */
+  async resetPassword(dto: ResetPasswordDto): Promise<void> {
+    const passwordHash = await this.passwords.hash(dto.password);
+
+    await this.userTokens.consume(
+      dto.token,
+      UserTokenPurpose.PASSWORD_RESET,
+      async (tx, userId) => {
+        await tx.user.update({ where: { id: userId }, data: { passwordHash } });
+        await this.refreshTokens.revokeAllForUser(userId, tx);
+      },
+    );
+  }
+
+  /**
+   * Marca la casilla como confirmada.
+   *
+   * Es idempotente por el lado del token (un link sirve una sola vez), pero no
+   * hace falta chequear si ya estaba verificado: escribir la fecha de nuevo no
+   * rompe nada y evita un caso borde sin valor.
+   */
+  async verifyEmail(dto: VerifyEmailDto): Promise<void> {
+    await this.userTokens.consume(
+      dto.token,
+      UserTokenPurpose.EMAIL_VERIFICATION,
+      async (tx, userId) => {
+        await tx.user.update({
+          where: { id: userId },
+          data: { emailVerifiedAt: new Date() },
+        });
+      },
+    );
+  }
+
+  /**
+   * Reenvía el mail de verificación al usuario logueado.
+   *
+   * Acá sí se puede decir "ya está confirmado" sin filtrar nada: el endpoint
+   * pide token, así que quien pregunta ya es el dueño de la cuenta.
+   */
+  async resendEmailVerification(current: AuthenticatedUser): Promise<void> {
+    const user = await this.prisma.user.findFirst({
+      where: { id: current.userId, deletedAt: null },
+      select: { id: true, email: true, firstName: true, emailVerifiedAt: true },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('La sesión ya no es válida');
+    }
+
+    if (user.emailVerifiedAt !== null) {
+      throw new ConflictException('Tu email ya está confirmado');
+    }
+
+    await this.sendVerificationEmail(user);
+  }
+
+  /** Emite el token de verificación y manda el mail. No lanza si el mail falla. */
+  private async sendVerificationEmail(user: {
+    id: string;
+    email: string;
+    firstName: string;
+  }): Promise<void> {
+    const { url, expiresAt } = await this.userTokens.issue(
+      user.id,
+      UserTokenPurpose.EMAIL_VERIFICATION,
+    );
+
+    await this.mail.sendEmailVerification({
+      to: user.email,
+      firstName: user.firstName,
+      url,
+      expiresAt,
+    });
   }
 
   private async issueTokens(

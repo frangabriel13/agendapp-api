@@ -8,6 +8,7 @@ import { Prisma } from '@prisma/client';
  */
 export const SOFT_DELETE_EXEMPT_MODELS = new Set<string>([
   'RefreshToken',
+  'UserToken', // token de un solo uso, como RefreshToken
   'AuditLog',
   'Plan', // catálogo global: se da de baja con `isActive`, no con deletedAt
   'Subscription',

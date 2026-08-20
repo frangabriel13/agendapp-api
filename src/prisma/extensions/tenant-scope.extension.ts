@@ -11,6 +11,7 @@ import type { TenantContextService } from '../../common/tenant-context';
 export const TENANT_EXEMPT_MODELS = new Set<string>([
   'User',
   'RefreshToken',
+  'UserToken', // cuelga de User, que es global: reset de contraseña y verificación
   'Plan',
   'Tenant', // no tiene columna tenantId: ÉL es el tenant. Se filtra por `id`.
   'AuditLog', // tenantId nullable: actions del sistema sin tenant

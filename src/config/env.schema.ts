@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const envSchema = z.object({
+const baseEnvSchema = z.object({
   NODE_ENV: z
     .enum(['development', 'production', 'test'])
     .default('development'),
@@ -56,6 +56,50 @@ export const envSchema = z.object({
    * mientras está vivo, cualquiera con el link puede tomar esa cuenta.
    */
   EMPLOYEE_INVITATION_TTL_HOURS: z.coerce.number().int().positive().default(72),
+
+  // --- Mail ---------------------------------------------------------------
+  /**
+   * `log` no manda nada: escribe el mail (y sus links) en la consola. Es el
+   * default para que el proyecto arranque sin credenciales de nadie. En
+   * producción va `resend`.
+   */
+  MAIL_PROVIDER: z.enum(['log', 'resend']).default('log'),
+
+  /** Solo se usa con `MAIL_PROVIDER=resend`, donde pasa a ser obligatoria. */
+  RESEND_API_KEY: z.string().min(1).optional(),
+
+  /**
+   * El remitente. Con Resend, el dominio tiene que estar verificado (SPF+DKIM)
+   * o los mails solo llegan a la casilla de la propia cuenta.
+   */
+  MAIL_FROM: z.string().min(1).default('AgendApp <onboarding@resend.dev>'),
+
+  /**
+   * Vida del link de reset de contraseña, en minutos. Mucho más corto que la
+   * invitación: el link de reset toma una cuenta que ya está en uso.
+   */
+  PASSWORD_RESET_TTL_MINUTES: z.coerce.number().int().positive().default(60),
+
+  /**
+   * Vida del link de verificación de email, en horas. Largo porque no da
+   * acceso a nada: confirmar tarde no es un riesgo, es una molestia.
+   */
+  EMAIL_VERIFICATION_TTL_HOURS: z.coerce.number().int().positive().default(48),
+});
+
+/**
+ * Lo que un campo solo no puede validar: la API key es obligatoria únicamente
+ * cuando el proveedor elegido la necesita. Falla al arrancar y no en el primer
+ * envío, que es cuando enterarse ya es tarde.
+ */
+export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
+  if (env.MAIL_PROVIDER === 'resend' && !env.RESEND_API_KEY) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['RESEND_API_KEY'],
+      message: 'RESEND_API_KEY is required when MAIL_PROVIDER=resend',
+    });
+  }
 });
 
 export type Env = z.infer<typeof envSchema>;

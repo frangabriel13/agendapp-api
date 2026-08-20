@@ -16,6 +16,7 @@ import {
 } from './common/tenant-context';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { RolesGuard } from './common/guards/roles.guard';
+import { MailModule } from './common/mail';
 import { PrismaModule } from './prisma/prisma.module';
 import { AppointmentsModule } from './modules/appointments/appointments.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -71,6 +72,7 @@ import type { Env } from './config/env.schema';
     ThrottlerModule.forRoot(THROTTLERS),
     TenantContextModule,
     PrismaModule,
+    MailModule,
     AuthModule,
     HealthModule,
     TenantsModule,
