@@ -24,6 +24,7 @@ import { BranchesModule } from './modules/branches/branches.module';
 import { CustomerTagsModule } from './modules/customer-tags/customer-tags.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { EmployeesModule } from './modules/employees/employees.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 import { ResourcesModule } from './modules/resources/resources.module';
 import { ServiceCategoriesModule } from './modules/service-categories/service-categories.module';
 import { ServicesModule } from './modules/services/services.module';
@@ -84,6 +85,7 @@ import type { Env } from './config/env.schema';
     CustomersModule,
     CustomerTagsModule,
     AppointmentsModule,
+    PaymentsModule,
   ],
   controllers: [],
   providers: [

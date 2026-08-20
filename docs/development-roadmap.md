@@ -8,7 +8,7 @@
 
 ## 📌 Estado actual del repo
 
-> **Fases 0 a 5 cerradas, más los mails transaccionales.** El corazón del sistema ya está: turnos, disponibilidad y recurrencia. Los mails se adelantaron (estaban diferidos con deadline "antes de la Fase 7") porque su única deuda real —no poder recuperar una contraseña sin entrar a la base a mano— no convenía arrastrarla más. El próximo paso es la Fase 6 (pagos).
+> **Fases 0 a 5 cerradas, más los mails transaccionales. La Fase 6 (pagos) está empezada.** El corazón del sistema ya está: turnos, disponibilidad y recurrencia. Los mails se adelantaron (estaban diferidos con deadline "antes de la Fase 7") porque su única deuda real —no poder recuperar una contraseña sin entrar a la base a mano— no convenía arrastrarla más. De pagos están los modelos y el proveedor; faltan los endpoints y las suscripciones.
 
 **Cimientos (Fase 0)**
 
@@ -86,7 +86,15 @@
 2. **`forgot-password` responde 204 exista o no la cuenta.** Contestar distinto lo convertiría en un enumerador de emails registrados que no necesita credenciales. Lo que la respuesta uniforme no tapa es el tiempo; eso lo acota el throttle de 5/min y lo cierra del todo la cola.
 3. **El propósito del token es parte de lo que se valida.** Si no lo fuera, el link de verificación —que se manda solo, sin que nadie lo pida— serviría para cambiar la contraseña.
 
-- ✅ Total del repo: **366 tests unitarios + 331 e2e**, 80 endpoints.
+**Pagos (Fase 6) — tramo 1: modelos y proveedor**
+
+- ✅ Migración `20260820182921_payments`: `AppointmentPayment`, `SubscriptionPayment` y sus tres enums, con `mp_payment_id` UNIQUE (idempotencia del webhook) y los CHECK de monto, moneda, coherencia `status`/`paid_at` y método vs. id de MP.
+- ✅ `PaymentProvider` con dos implementaciones: `MercadoPagoProvider` (HTTP directo, sin SDK) y `SandboxPaymentProvider` (el default, y el modo de desarrollo: cada checkout deja un pago aprobado esperando).
+- ✅ `payment-balance.ts`: la única definición de "cuánto pagó", como función pura.
+- ✅ La app no levanta si `PAYMENT_PROVIDER=mercadopago` y falta el token o el secreto de webhook.
+- ⏭️ Falta: los endpoints (tramo 2) y las suscripciones (tramo 3).
+
+- ✅ Total del repo: **427 tests unitarios + 331 e2e**, 80 endpoints.
 
 **Tres cosas que la Fase 6 y el portal van a dar por sentadas**
 
@@ -107,7 +115,7 @@
 | ✅ 4 | Clientes | Customers + tags |
 | ✅ 5 | Turnos (corazón) | Appointments + disponibilidad + recurrencia |
 | ✅ 1.7 | Mails transaccionales | Reset de contraseña, verificación, invitación por mail (venía diferido de la Fase 1) |
-| 6 | Pagos | Mercado Pago (señas + suscripciones) |
+| 🚧 6 | Pagos | Mercado Pago (señas + suscripciones) — modelos y proveedor listos |
 | 7 | Portal público | Endpoints sin auth para reservar online |
 | 8 | Transversales finales | Notas, auditoría, RLS, jobs (BullMQ) |
 | 9 | Hardening | E2E, observabilidad, métricas, carga |
@@ -603,25 +611,51 @@ imposible, con test de concurrencia: dos `POST` en paralelo al mismo slot, uno
 
 ## 💰 FASE 6 — Pagos
 
-### 6.1 Modelos
+### ✅ 6.1 Modelos
 
-`AppointmentPayment`, `SubscriptionPayment`.
+Migración `20260820182921_payments`: `AppointmentPayment` y `SubscriptionPayment`,
+con los enums `PaymentStatus`, `AppointmentPaymentType` y `PaymentMethod`.
 
-```bash
-npx prisma migrate dev --name payments
-```
+**Lo que se sumó a lo que decía el modelo conceptual:**
 
-### 6.2 Abstracción del provider
+- **`mp_payment_id` es UNIQUE.** Es lo que hace idempotente al webhook, que MP entrega varias veces y desordenado. Sin eso, un aviso repetido cobra dos veces.
+- **`currency`**, congelada del tenant al crear el pago. Un movimiento de plata tiene que poder conciliarse contra el reporte del proveedor años después, y ahí el monto viene con su moneda.
+- **`period_start`/`period_end`** en los pagos de suscripción: el período de `subscriptions` se pisa en cada renovación, así que sin esto no queda historial de qué mes pagó cada cobro.
+- **`mp_preference_id` y `checkout_url`**, para volver a mostrar el link de pago sin crear otra preferencia.
+- **CHECK constraints escritos a mano**: monto positivo, formato de moneda, coherencia entre `status` y `paid_at`, y que los ids de MP solo existan si el método es `mercadopago`. Se probaron los 8 casos de rechazo contra la base antes de seguir.
+
+**La decisión que hay que conocer:** hay **dos formas** de representar plata que
+vuelve —`status = refunded` (el proveedor revirtió el pago entero) y una fila
+con `payment_type = refund` (devolución nuestra, quizás parcial)— y confundirlas
+es el error clásico de esta tabla. Por eso el saldo se calcula en un solo lugar,
+`src/modules/payments/payment-balance.ts`, que es una función pura con tests.
+
+### ✅ 6.2 Abstracción del provider
 
 `src/modules/payments/providers/`:
 
-- Interfaz `PaymentProvider` con `createPreference()`, `verifyWebhookSignature()`, `getPayment()`.
-- Implementación `MercadoPagoProvider` con el SDK oficial.
-- Mock para tests.
+- `PaymentProvider` con `createCheckout()`, `verifyWebhookSignature()`, `paymentIdFromWebhook()` y `getPayment()`.
+- `MercadoPagoProvider`: HTTP directo, **sin SDK**. Son dos llamadas y un HMAC; el SDK oficial traería su cadena de dependencias a cambio de envolver `fetch`.
+- `SandboxPaymentProvider`: el default, y el modo de desarrollo. Cada checkout deja un pago ya aprobado esperando y anota el id en el log — se le pega al webhook con ese id y el flujo corre entero sin cuenta de MP.
 
-```bash
-npm i mercadopago
-```
+**Tres desvíos respecto de lo que decía este plan:**
+
+1. **`createCheckout`, no `createPreference`.** "Preferencia" es vocabulario de Mercado Pago; una interfaz que lo usa no es una abstracción, es MP con otro nombre.
+2. **Se sumó `paymentIdFromWebhook()`.** No se puede actuar sobre un aviso sin sacarle el id, y dónde vive el id es específico del proveedor (MP lo pone en el body o en el query string, y manda avisos de otras cosas por el mismo endpoint).
+3. **El mock no vive en los tests, vive en `src/`.** Mismo criterio que `LogMailProvider`: es el modo de desarrollo, no scaffolding de test.
+
+**Y una decisión de seguridad que conviene no revertir sin leer el porqué:** la
+verificación de firma **no valida que el `ts` sea reciente**. Una ventana
+antirreplay protegería contra reenviar un aviso viejo, pero acá eso no hace
+daño: el aviso solo dispara un `getPayment`, el estado sale de ahí y
+`mp_payment_id` es único en la base. En cambio, si MP reintenta una entrega
+firmada hace horas y la rechazamos por vieja, **se pierde un pago**.
+
+> ⚠️ **Sin verificar contra MP real.** El algoritmo de firma está escrito desde
+> la documentación y testeado contra vectores calculados a mano (el hash está
+> hardcodeado en el spec justamente para que el formato del manifiesto quede
+> fijado). Nadie lo probó todavía contra un webhook de verdad. Es lo primero a
+> confirmar cuando haya credenciales.
 
 ### 6.3 Endpoints
 

@@ -212,14 +212,25 @@ Cobros realizados de la suscripción.
 | Campo | Tipo | Notas |
 |---|---|---|
 | `id` | UUID | PK |
-| `subscription_id` | UUID | FK → subscriptions |
+| `subscription_id` | UUID | FK → subscriptions, `ON DELETE RESTRICT` |
 | `tenant_id` | UUID | FK → tenants |
-| `amount_cents` | INT | |
-| `status` | ENUM | pending, succeeded, failed, refunded |
-| `mp_payment_id` | VARCHAR | nullable |
+| `amount_cents` | INT | siempre positivo |
+| `currency` | VARCHAR(3) | ISO 4217 en mayúsculas |
+| `status` | ENUM | pending, succeeded, failed, refunded (el mismo enum que los pagos de turnos) |
+| `mp_payment_id` | VARCHAR | nullable, **UNIQUE** |
+| `period_start` / `period_end` | TIMESTAMP | qué período paga |
 | `paid_at` | TIMESTAMP | nullable |
 | `failure_reason` | TEXT | nullable |
-| `created_at` | TIMESTAMP | |
+| `created_at` / `updated_at` | TIMESTAMP | |
+
+> **`period_start`/`period_end` no estaban en el plan original y se sumaron.**
+> `subscriptions` también tiene un período, pero ese se pisa en cada renovación:
+> sin guardarlo acá, no queda historial de qué mes pagó cada cobro, que es
+> justo lo que hace falta para decidir si una suscripción está al día.
+
+**CHECK constraints:** `amount_cents > 0`; formato de `currency`; la misma
+coherencia entre `status` y `paid_at` que en los pagos de turnos; y
+`period_end > period_start`.
 
 ---
 
@@ -668,19 +679,51 @@ Pagos asociados a turnos (seña, total, restante, reembolso).
 | Campo | Tipo | Notas |
 |---|---|---|
 | `id` | UUID | PK |
-| `appointment_id` | UUID | FK → appointments |
+| `appointment_id` | UUID | FK → appointments, `ON DELETE RESTRICT` |
 | `tenant_id` | UUID | FK → tenants |
-| `amount_cents` | INT | |
+| `amount_cents` | INT | **siempre positivo**, incluso en las devoluciones |
+| `currency` | VARCHAR(3) | ISO 4217 en mayúsculas, copiada del tenant al crear |
 | `payment_type` | ENUM | deposit, full, remainder, refund |
 | `payment_method` | ENUM | mercadopago, cash, transfer, other |
 | `status` | ENUM | pending, succeeded, failed, refunded |
-| `mp_payment_id` | VARCHAR | nullable |
+| `mp_payment_id` | VARCHAR | nullable, **UNIQUE** — es lo que hace idempotente al webhook |
+| `mp_preference_id` | VARCHAR | nullable — el checkout que se creó para cobrarlo |
+| `checkout_url` | TEXT | nullable — para volver a mostrar el link sin crear otra preferencia |
 | `recorded_by_user_id` | UUID | FK → users, nullable |
 | `notes` | TEXT | nullable |
+| `failure_reason` | TEXT | nullable — el `status_detail` de MP cuando se rechaza |
 | `paid_at` | TIMESTAMP | nullable |
-| `created_at` | TIMESTAMP | |
+| `created_at` / `updated_at` | TIMESTAMP | |
 
 > `recorded_by_user_id` es null cuando el pago fue online del cliente (autoservicio).
+
+**Cómo se calcula el saldo (la única definición válida):**
+
+Hay **dos formas** de representar plata que vuelve, y confundirlas es el error
+clásico de esta tabla:
+
+- `status = 'refunded'` → el proveedor revirtió ese pago **entero**. No suma ni resta: es como si no hubiera pasado.
+- `payment_type = 'refund'` con `status = 'succeeded'` → una devolución hecha por nosotros (parcial, o efectivo en el mostrador). Esa **resta**.
+
+O sea: `pagado = Σ(succeeded, tipo ≠ refund) − Σ(succeeded, tipo = refund)`.
+Vive en `src/modules/payments/payment-balance.ts` como función pura con tests.
+**Si aparece otra definición en algún service, una de las dos está mal.**
+
+**Nada se borra.** Está en `SOFT_DELETE_EXEMPT_MODELS` a propósito: es un
+registro contable. Un pago que no correspondía se corrige con una fila de
+devolución, no haciéndolo desaparecer.
+
+**CHECK constraints** (escritos a mano en la migración `20260820182921_payments`):
+`amount_cents > 0`; `currency ~ '^[A-Z]{3}$'`; coherencia entre `status` y
+`paid_at` (acreditado y devuelto la tienen, pendiente y fallido no); y que
+`mp_payment_id` / `mp_preference_id` solo existan si `payment_method =
+'mercadopago'` — un pago en efectivo con id de Mercado Pago es un bug.
+
+**Por qué las columnas dicen `mp_` y no `provider_`:** Mercado Pago es el único
+proveedor real previsto, igual que en `subscriptions.mp_subscription_id`. La
+interfaz `PaymentProvider` existe para poder ejercitar el cobro sin red (en
+tests y en desarrollo corre un proveedor de mentira), no porque se espere
+cambiar de proveedor.
 
 ---
 

@@ -85,6 +85,24 @@ const baseEnvSchema = z.object({
    * acceso a nada: confirmar tarde no es un riesgo, es una molestia.
    */
   EMAIL_VERIFICATION_TTL_HOURS: z.coerce.number().int().positive().default(48),
+
+  // --- Pagos --------------------------------------------------------------
+  /**
+   * `sandbox` no cobra nada: cada checkout queda con un pago ya aprobado
+   * esperando al webhook. Es el default para que el flujo de seña se pueda
+   * probar en local sin cuenta de Mercado Pago. En producción va `mercadopago`.
+   */
+  PAYMENT_PROVIDER: z.enum(['sandbox', 'mercadopago']).default('sandbox'),
+
+  /** Obligatorio con `PAYMENT_PROVIDER=mercadopago`. Un token de prueba empieza con `TEST-`. */
+  MP_ACCESS_TOKEN: z.string().min(1).optional(),
+
+  /**
+   * El secreto con el que MP firma los avisos, del panel de webhooks.
+   * Obligatorio con `PAYMENT_PROVIDER=mercadopago`: sin verificar la firma, el
+   * webhook es un endpoint público donde cualquiera avisa "esto ya se pagó".
+   */
+  MP_WEBHOOK_SECRET: z.string().min(1).optional(),
 });
 
 /**
@@ -99,6 +117,26 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
       path: ['RESEND_API_KEY'],
       message: 'RESEND_API_KEY is required when MAIL_PROVIDER=resend',
     });
+  }
+
+  if (env.PAYMENT_PROVIDER === 'mercadopago') {
+    if (!env.MP_ACCESS_TOKEN) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['MP_ACCESS_TOKEN'],
+        message:
+          'MP_ACCESS_TOKEN is required when PAYMENT_PROVIDER=mercadopago',
+      });
+    }
+
+    if (!env.MP_WEBHOOK_SECRET) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['MP_WEBHOOK_SECRET'],
+        message:
+          'MP_WEBHOOK_SECRET is required when PAYMENT_PROVIDER=mercadopago',
+      });
+    }
   }
 });
 
