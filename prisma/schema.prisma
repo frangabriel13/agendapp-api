@@ -85,6 +85,7 @@ model User {
   ownedTenant         Tenant?
   employee            Employee?
   createdAppointments Appointment[]
+  recordedPayments    AppointmentPayment[]
 
   @@map("users")
 }
@@ -190,8 +191,9 @@ model Subscription {
   createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz
   updatedAt          DateTime           @updatedAt @map("updated_at") @db.Timestamptz
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  plan   Plan   @relation(fields: [planId], references: [id], onDelete: Restrict)
+  tenant   Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan     Plan                  @relation(fields: [planId], references: [id], onDelete: Restrict)
+  payments SubscriptionPayment[]
 
   @@index([tenantId])
   @@index([status])
@@ -245,6 +247,9 @@ model Tenant {
   appointmentServices AppointmentService[]
   appointmentResource AppointmentResource[]
   recurrenceGroups    RecurrenceGroup[]
+
+  appointmentPayments  AppointmentPayment[]
+  subscriptionPayments SubscriptionPayment[]
 
   @@index([planId])
   @@map("tenants")
@@ -788,6 +793,7 @@ model Appointment {
 
   services  AppointmentService[]
   resources AppointmentResource[]
+  payments  AppointmentPayment[]
 
   @@index([tenantId, startsAt])
   @@index([employeeId, startsAt])
@@ -868,4 +874,136 @@ model RecurrenceGroup {
 
   @@index([tenantId])
   @@map("recurrence_groups")
+}
+
+// ─────────────────────────────── Fase 6: pagos ──────────────────────────────
+
+/// Estado de un movimiento de plata, sea de un turno o de la suscripción.
+///
+/// `REFUNDED` es el pago que **el proveedor revirtió entero**. Una devolución
+/// parcial, o una que se hace por fuera (efectivo en el mostrador), NO se
+/// representa así: es una fila nueva con `paymentType = REFUND`. Ver la nota de
+/// `AppointmentPayment`, porque tener las dos formas es justo lo que hace que
+/// alguien calcule el saldo de dos maneras distintas en dos lugares.
+enum PaymentStatus {
+  PENDING   @map("pending")
+  SUCCEEDED @map("succeeded")
+  FAILED    @map("failed")
+  REFUNDED  @map("refunded")
+
+  @@map("payment_status")
+}
+
+/// Qué representa el movimiento dentro del turno.
+enum AppointmentPaymentType {
+  /// La seña, para reservar.
+  DEPOSIT   @map("deposit")
+  /// El precio completo de una sola vez.
+  FULL      @map("full")
+  /// Lo que faltaba después de la seña.
+  REMAINDER @map("remainder")
+  /// Plata que vuelve al cliente. Se guarda en **positivo**: el signo lo pone
+  /// el tipo, no el número.
+  REFUND    @map("refund")
+
+  @@map("appointment_payment_type")
+}
+
+/// Por dónde entró la plata. `MERCADOPAGO` es online; el resto lo carga alguien
+/// del negocio a mano desde el panel.
+enum PaymentMethod {
+  MERCADOPAGO @map("mercadopago")
+  CASH        @map("cash")
+  TRANSFER    @map("transfer")
+  OTHER       @map("other")
+
+  @@map("payment_method")
+}
+
+/// Movimientos de plata de un turno: seña, total, saldo y devoluciones.
+///
+/// **El saldo se calcula sumando filas, no leyendo un campo.** Un pago con
+/// `status = REFUNDED` cuenta como cero, y una fila con `paymentType = REFUND`
+/// resta. Esa es la única definición válida de "cuánto pagó"; si aparece otra
+/// en algún service, una de las dos está mal.
+///
+/// **Nada se borra.** Está en `SOFT_DELETE_EXEMPT_MODELS` a propósito: es un
+/// registro contable. Un pago que no correspondía se corrige con una fila de
+/// devolución, no haciéndolo desaparecer.
+///
+/// Las columnas dicen `mp_` y no `provider_` porque Mercado Pago es el único
+/// proveedor real previsto, igual que `subscriptions.mp_subscription_id`. La
+/// interfaz `PaymentProvider` existe para poder testear sin red, no porque se
+/// espere cambiar de proveedor.
+model AppointmentPayment {
+  id            String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String                 @map("tenant_id") @db.Uuid
+  appointmentId String                 @map("appointment_id") @db.Uuid
+  amountCents   Int                    @map("amount_cents")
+  /// Congelada al crear el pago, copiada de `Tenant.currency`. Un movimiento de
+  /// plata tiene que poder conciliarse contra el reporte del proveedor años
+  /// después, y ahí el monto viene con su moneda.
+  currency      String                 @default("ARS") @db.VarChar(3)
+  paymentType   AppointmentPaymentType @map("payment_type")
+  paymentMethod PaymentMethod          @map("payment_method")
+  status        PaymentStatus          @default(PENDING)
+
+  /// El id del pago en Mercado Pago. **Único**: es lo que hace idempotente al
+  /// webhook, que MP puede entregar varias veces y desordenado.
+  mpPaymentId    String? @unique @map("mp_payment_id") @db.VarChar(100)
+  /// La preferencia de checkout que se creó para cobrar esto.
+  mpPreferenceId String? @map("mp_preference_id") @db.VarChar(100)
+  /// El link al que se manda al cliente. Se guarda para poder volver a
+  /// mostrarlo sin crear otra preferencia.
+  checkoutUrl    String? @map("checkout_url") @db.Text
+
+  /// Quién lo cargó a mano. `null` = lo pagó el cliente online.
+  recordedByUserId String?   @map("recorded_by_user_id") @db.Uuid
+  notes            String?   @db.Text
+  failureReason    String?   @map("failure_reason") @db.Text
+  paidAt           DateTime? @map("paid_at") @db.Timestamptz
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
+  recordedBy  User?       @relation(fields: [recordedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([appointmentId])
+  @@index([status])
+  @@map("appointment_payments")
+}
+
+/// Cobros de la suscripción del negocio a AgendApp.
+///
+/// Guarda el período que paga (`periodStart`/`periodEnd`) además del que la
+/// suscripción tiene "vigente": el de la suscripción se pisa en cada renovación
+/// y el de acá queda como historial.
+model SubscriptionPayment {
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId       String        @map("tenant_id") @db.Uuid
+  subscriptionId String        @map("subscription_id") @db.Uuid
+  amountCents    Int           @map("amount_cents")
+  currency       String        @default("ARS") @db.VarChar(3)
+  status         PaymentStatus @default(PENDING)
+
+  /// Único, por el mismo motivo que en `AppointmentPayment`: el webhook de MP
+  /// puede llegar repetido.
+  mpPaymentId String? @unique @map("mp_payment_id") @db.VarChar(100)
+
+  periodStart   DateTime  @map("period_start") @db.Timestamptz
+  periodEnd     DateTime  @map("period_end") @db.Timestamptz
+  failureReason String?   @map("failure_reason") @db.Text
+  paidAt        DateTime? @map("paid_at") @db.Timestamptz
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, createdAt])
+  @@index([subscriptionId])
+  @@index([status])
+  @@map("subscription_payments")
 }
