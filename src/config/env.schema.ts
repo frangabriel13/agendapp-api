@@ -103,6 +103,14 @@ const baseEnvSchema = z.object({
    * webhook es un endpoint público donde cualquiera avisa "esto ya se pagó".
    */
   MP_WEBHOOK_SECRET: z.string().min(1).optional(),
+
+  /**
+   * La URL pública de **esta API**, la que el proveedor usa para avisar de un
+   * pago. No es `APP_BASE_URL`, que es el frontend. En desarrollo, Mercado Pago
+   * no puede alcanzar `localhost`: hace falta un túnel (ngrok o similar) y
+   * poner acá la URL que devuelva.
+   */
+  API_PUBLIC_URL: z.string().url().default('http://localhost:3001'),
 });
 
 /**

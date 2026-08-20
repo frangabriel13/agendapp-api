@@ -6,6 +6,8 @@ import request from 'supertest';
 import type { App } from 'supertest/types';
 import { AppModule } from '../../src/app.module';
 import { MAIL_PROVIDER } from '../../src/common/mail';
+import { PAYMENT_PROVIDER } from '../../src/modules/payments/providers/payment-provider.types';
+import type { SandboxPaymentProvider } from '../../src/modules/payments/providers/sandbox-payment.provider';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { RecordingMailProvider } from './recording-mail.provider';
 
@@ -17,6 +19,11 @@ export interface E2EContext {
   prisma: PrismaService;
   /** La casilla donde caen los mails en vez de salir. */
   mail: RecordingMailProvider;
+  /**
+   * El proveedor de pagos de mentira. Es el default de la config, así que no
+   * hace falta reemplazarlo: se agarra el que armó el módulo.
+   */
+  payments: SandboxPaymentProvider;
 }
 
 /** Contraseña válida según las reglas del DTO (8+, con letra y número). */
@@ -48,7 +55,12 @@ export async function createTestApp(): Promise<E2EContext> {
   const app = moduleRef.createNestApplication<TestApp>({ logger: false });
   await app.init();
 
-  return { app, prisma: app.get(PrismaService), mail };
+  return {
+    app,
+    prisma: app.get(PrismaService),
+    mail,
+    payments: app.get<SandboxPaymentProvider>(PAYMENT_PROVIDER),
+  };
 }
 
 /**

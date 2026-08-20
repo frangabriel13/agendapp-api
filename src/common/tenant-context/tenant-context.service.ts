@@ -3,7 +3,13 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 export interface TenantContext {
   tenantId: string;
-  userId: string;
+  /**
+   * Opcional porque hay flows con tenant pero **sin persona detrás**: el
+   * webhook de Mercado Pago sabe de qué negocio es el pago (sale de la fila) y
+   * no tiene ningún usuario a quien atribuírselo. Poner el dueño ahí sería
+   * mentir en el `AuditLog` de la Fase 8.
+   */
+  userId?: string;
   employeeId?: string;
   role?: string;
 }

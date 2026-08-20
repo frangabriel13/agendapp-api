@@ -1,12 +1,16 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Env } from '../../config/env.schema';
+import { AppointmentsModule } from '../appointments/appointments.module';
+import { PaymentsController } from './payments.controller';
+import { PaymentsService } from './payments.service';
 import {
   PAYMENT_PROVIDER,
   type PaymentProvider,
 } from './providers/payment-provider.types';
 import { MercadoPagoProvider } from './providers/mercadopago.provider';
 import { SandboxPaymentProvider } from './providers/sandbox-payment.provider';
+import { WebhooksController } from './webhooks.controller';
 
 /**
  * Elige el proveedor **al arrancar**, no en cada cobro: si las credenciales
@@ -30,18 +34,25 @@ function createPaymentProvider(
 }
 
 /**
- * Pagos. Hoy solo arma el proveedor; los endpoints llegan en el tramo 2.
+ * Pagos de turnos.
  *
  * **No es `@Global`**, a diferencia de `MailModule`: cobrar es un dominio, no
- * infraestructura transversal. El que necesite el proveedor importa este módulo.
+ * infraestructura transversal.
+ *
+ * Importa `AppointmentsModule` porque **el estado de un turno lo escribe el
+ * service de turnos**, incluso cuando el disparador es un pago. La dependencia
+ * va en un solo sentido: turnos no sabe que existen los pagos.
  */
 @Module({
+  imports: [AppointmentsModule],
+  controllers: [PaymentsController, WebhooksController],
   providers: [
     {
       provide: PAYMENT_PROVIDER,
       inject: [ConfigService],
       useFactory: createPaymentProvider,
     },
+    PaymentsService,
   ],
   exports: [PAYMENT_PROVIDER],
 })

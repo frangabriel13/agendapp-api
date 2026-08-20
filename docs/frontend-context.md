@@ -280,7 +280,7 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 
 ## Qué existe hoy y qué no
 
-**Disponible — 80 endpoints:**
+**Disponible — 84 endpoints:**
 
 | Área | Endpoints | Alcanza para |
 |---|---|---|
@@ -294,11 +294,13 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 | `/customers` | 7 | CRUD de clientes, búsqueda paginada, etiquetas de cada uno |
 | `/customer-tags` | 5 | CRUD de etiquetas ("VIP", "Debe seña") |
 | `/appointments` | 8 | Disponibilidad, agendar, agenda por rango, estados, reprogramar, series |
+| `/appointments/:id/payments` | 3 | Saldo del turno, link de pago online, pagos en efectivo y devoluciones |
+| `/webhooks` | 1 | Aviso de pago de Mercado Pago. **No lo llama el front** |
 | `/health` | 1 | Healthcheck |
 
 **Todavía no existe:**
 
-- Pagos y cobro de señas (Fase 6)
+- Suscripciones del negocio a AgendApp (Fase 6, tramo 3)
 - Portal público de reservas (Fase 7)
 
 No conviene diseñar contra estos: el contrato todavía no está definido y va a
@@ -501,6 +503,57 @@ horario es reprogramar. Un turno puede tener varios servicios seguidos con el
 mismo profesional (`serviceIds`), y la duración es la suma de todos con sus
 buffers. `NO_SHOW` **ocupa la agenda igual** que un turno atendido: esa hora
 estuvo tomada.
+
+### Detalle sobre los pagos (Fase 6)
+
+**El saldo no está guardado en ningún campo: se calcula.** `GET
+/appointments/:id/payments` devuelve `{ balance, payments }`, y `balance` es lo
+que hay que mostrar — no lo recalcules sumando `payments` en el front, porque
+hay dos formas distintas de representar plata que vuelve y es fácil contar una
+de más. Los campos que importan:
+
+| Campo | Qué es |
+|---|---|
+| `paidCents` | Lo que quedó en la caja, ya restadas las devoluciones. **Puede ser negativo** si se devolvió de más |
+| `dueCents` | Lo que falta cobrar. Nunca negativo |
+| `depositCovered` | Si la seña está cubierta. Sin seña configurada es `true` |
+| `fullyPaid` | Si está todo pago |
+
+**El cobro online es en dos tiempos.** `POST .../payments/checkout` devuelve un
+`checkoutUrl` y crea el pago **en estado pendiente**: el turno todavía no está
+pago. Quien lo confirma es Mercado Pago avisándole al backend, que puede tardar
+desde segundos hasta minutos. O sea: después de mandar al cliente al checkout,
+el front tiene que **volver a consultar el saldo**, no asumir que se pagó.
+
+**Pedir el checkout dos veces devuelve el mismo link**, con `reused: true`.
+Eso es a propósito y conviene no pelearlo con un "deshabilitar el botón": si el
+usuario hace doble clic, no se generan dos cobros.
+
+**El tipo de cobro se deduce solo.** Sin mandar `paymentType`, cobra la seña si
+el turno tiene una sin cubrir, y el saldo en cualquier otro caso. Se puede
+forzar con `DEPOSIT`, `FULL` o `REMAINDER`. `REFUND` **no** se puede cobrar
+online (400): una devolución se registra a mano.
+
+**Los pagos en efectivo van por `POST .../payments/manual`** y nacen
+acreditados. `paymentMethod` acepta `CASH`, `TRANSFER` u `OTHER` — mandar
+`MERCADOPAGO` da 400, porque ese pago lo crea el checkout. `paymentType` sí
+acepta `REFUND`: así se registra la plata que se devolvió en el mostrador.
+
+**En desarrollo no se cobra nada.** El backend arranca con
+`PAYMENT_PROVIDER=sandbox`: el `checkoutUrl` que devuelve apunta a
+`/pago/exito?sandbox=<paymentId>`, y para simular que se pagó hay que pegarle al
+webhook con ese id:
+
+```bash
+curl -X POST http://localhost:3001/webhooks/mercadopago \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"payment","data":{"id":"sandbox-payment-1"}}'
+```
+
+**Faltan tres pantallas de retorno**, a donde vuelve el cliente desde el
+checkout: `/pago/exito`, `/pago/error` y `/pago/pendiente`. Ojo con `/pago/exito`:
+que el cliente vuelva por ahí **no garantiza** que el pago esté acreditado — el
+estado real sale de consultar el saldo del turno.
 
 ### Detalle sobre la invitación de empleados
 

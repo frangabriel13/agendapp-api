@@ -24,7 +24,10 @@ import {
 } from '../../common/utils/timezone.util';
 import { exclusionViolationConstraint } from '../../prisma/exclusion-violation';
 import { scopedCreate } from '../../prisma/extensions';
-import { PrismaService } from '../../prisma/prisma.service';
+import {
+  PrismaService,
+  type ScopedTransactionClient,
+} from '../../prisma/prisma.service';
 import {
   BLOCKING_STATUSES,
   intersectIntervals,
@@ -641,6 +644,61 @@ export class AppointmentsService {
     });
 
     return { appointment: toAppointmentResponse(updated), refund };
+  }
+
+  /**
+   * Refleja en el turno el saldo que quedó después de mover plata.
+   *
+   * Lo llama `PaymentsService` cada vez que un pago cambia de estado, sea por
+   * el webhook o por una carga manual. Vive acá y no allá porque **el estado de
+   * un turno lo escribe el service de turnos**: si la lógica de confirmar se
+   * duplicara del lado de pagos, el espejo de recursos y la máquina de estados
+   * quedarían fuera de su único dueño.
+   *
+   * **El estado solo avanza.** Una seña cubierta confirma un turno que estaba
+   * esperando el pago; una devolución **no lo des-confirma**. Volver atrás no
+   * es una transición válida de la máquina de estados, y hacerlo en silencio
+   * sería peor que el problema: el turno sigue en la agenda de alguien, y qué
+   * hacer con eso lo decide el negocio (cancelándolo), no un webhook.
+   *
+   * `depositPaid` sí sigue al saldo en los dos sentidos: es un dato, no un
+   * estado, y de ahí sale el cálculo de la devolución al cancelar.
+   */
+  async syncPaymentState(
+    tx: ScopedTransactionClient,
+    appointmentId: string,
+    depositCovered: boolean,
+  ): Promise<void> {
+    const current = await tx.appointment.findFirst({
+      where: { id: appointmentId },
+      select: { id: true, status: true, depositPaid: true },
+    });
+
+    if (!current) {
+      return;
+    }
+
+    const confirms =
+      depositCovered && current.status === AppointmentStatus.PENDING_PAYMENT;
+
+    if (!confirms && current.depositPaid === depositCovered) {
+      return;
+    }
+
+    const appointment = await tx.appointment.update({
+      where: { id: appointmentId },
+      data: {
+        depositPaid: depositCovered,
+        ...(confirms ? { status: AppointmentStatus.CONFIRMED } : {}),
+      },
+      select: { id: true, startsAt: true, endsAt: true, status: true },
+    });
+
+    // `PENDING_PAYMENT` y `CONFIRMED` bloquean los dos, así que hoy esto no
+    // cambia nada. Se llama igual porque la regla es que todo cambio de estado
+    // pase por acá: el día que un turno impago deje de ocupar el lugar, esto ya
+    // está bien y no hay que acordarse.
+    await this.syncResourceMirror(tx, appointment);
   }
 
   /**
