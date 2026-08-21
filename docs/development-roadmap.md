@@ -8,7 +8,9 @@
 
 ## 📌 Estado actual del repo
 
-> **Fases 0 a 5 cerradas, más los mails transaccionales. La Fase 6 (pagos) está empezada.** El corazón del sistema ya está: turnos, disponibilidad y recurrencia. Los mails se adelantaron (estaban diferidos con deadline "antes de la Fase 7") porque su única deuda real —no poder recuperar una contraseña sin entrar a la base a mano— no convenía arrastrarla más. De pagos están los modelos y el proveedor; faltan los endpoints y las suscripciones.
+> **Fases 0 a 6 cerradas, más los mails transaccionales.** El corazón del sistema está: turnos, disponibilidad, recurrencia, y ahora cobros —señas de turnos y la suscripción del negocio—. Los mails se adelantaron (estaban diferidos con deadline "antes de la Fase 7") porque su única deuda real —no poder recuperar una contraseña sin entrar a la base a mano— no convenía arrastrarla más. Lo que sigue es la Fase 7 (portal público).
+>
+> ⚠️ **El backend va dos fases adelante del front**, que sigue con `/dashboard` y `/agenda` sobre datos mock desde que cerró la Fase 5. Ninguna de las formas de contrato de las últimas tres fases (paginación `{ data, meta }`, errores con campos extra, el `balance` de pagos) fue ejercitada todavía por una pantalla real.
 
 **Cimientos (Fase 0)**
 
@@ -86,17 +88,20 @@
 2. **`forgot-password` responde 204 exista o no la cuenta.** Contestar distinto lo convertiría en un enumerador de emails registrados que no necesita credenciales. Lo que la respuesta uniforme no tapa es el tiempo; eso lo acota el throttle de 5/min y lo cierra del todo la cola.
 3. **El propósito del token es parte de lo que se valida.** Si no lo fuera, el link de verificación —que se manda solo, sin que nadie lo pida— serviría para cambiar la contraseña.
 
-**Pagos (Fase 6) — tramos 1 y 2: modelos, proveedor y cobros de turnos**
+**Pagos (Fase 6) — cerrada**
 
 - ✅ Migración `20260820182921_payments`: `AppointmentPayment`, `SubscriptionPayment` y sus tres enums, con `mp_payment_id` UNIQUE (idempotencia del webhook) y los CHECK de monto, moneda, coherencia `status`/`paid_at` y método vs. id de MP.
 - ✅ `PaymentProvider` con dos implementaciones: `MercadoPagoProvider` (HTTP directo, sin SDK) y `SandboxPaymentProvider` (el default, y el modo de desarrollo: cada checkout deja un pago aprobado esperando).
 - ✅ `payment-balance.ts`: la única definición de "cuánto pagó", como función pura.
 - ✅ **Cuatro endpoints**: saldo del turno, checkout online, webhook y pago manual (incluidas devoluciones en el mostrador).
 - ✅ **El webhook es idempotente de verdad**, con test: el mismo aviso dos veces —y dos avisos simultáneos— dejan una sola fila y el mismo saldo.
+- ✅ **Suscripciones**: estado y cobro del mes (`/tenants/me/subscription`), cron diario que vence lo impago, y `@RequiresActiveSubscription()` sobre el alta de turnos con ventana de gracia. Responde **402**, y **no** bloquea leer, cancelar ni reprogramar.
+- ✅ Migración `20260820211847_subscription_checkout`: `mp_preference_id` y `checkout_url` en `subscription_payments`, para que pedir el link dos veces no genere dos cobros del mismo mes.
+- ✅ El seed de demo ahora crea la fila de `Subscription` que le faltaba: el negocio de demo tenía el espejo (`Tenant.subscriptionStatus`) sin la fuente.
 - ✅ La app no levanta si `PAYMENT_PROVIDER=mercadopago` y falta el token o el secreto de webhook.
-- ⏭️ Falta: las suscripciones (tramo 3) y la devolución automática.
+- ⏭️ Falta, fuera del plan original: **débito automático** (preapproval de MP) y **devolución automática** (hoy se registra que se devolvió plata, pero no se le ordena a MP que la devuelva).
 
-- ✅ Total del repo: **427 tests unitarios + 360 e2e**, 84 endpoints.
+- ✅ Total del repo: **450 tests unitarios + 381 e2e**, 86 endpoints.
 
 **Tres cosas que la Fase 6 y el portal van a dar por sentadas**
 
@@ -117,7 +122,7 @@
 | ✅ 4 | Clientes | Customers + tags |
 | ✅ 5 | Turnos (corazón) | Appointments + disponibilidad + recurrencia |
 | ✅ 1.7 | Mails transaccionales | Reset de contraseña, verificación, invitación por mail (venía diferido de la Fase 1) |
-| 🚧 6 | Pagos | Mercado Pago (señas + suscripciones) — modelos y proveedor listos |
+| ✅ 6 | Pagos | Mercado Pago: señas de turnos y suscripción del negocio |
 | 7 | Portal público | Endpoints sin auth para reservar online |
 | 8 | Transversales finales | Notas, auditoría, RLS, jobs (BullMQ) |
 | 9 | Hardening | E2E, observabilidad, métricas, carga |
@@ -701,10 +706,42 @@ plata, pero no ordenarle a MP que la devuelva. `resolveRefund` (Fase 5) ya
 calcula cuánto corresponde al cancelar; conectar eso con la API de refunds es
 trabajo pendiente.
 
-### 6.4 Suscripciones
+### ✅ 6.4 Suscripciones
 
-- Job o webhook que cree `SubscriptionPayment` al cobrarse la mensualidad.
-- Cron diario que baje a `past_due` las suscripciones vencidas. Bloquear creación de turnos si `past_due` por más de N días.
+- `GET /tenants/me/subscription` — estado, plan, período, días de atraso, si está bloqueado y el historial de cobros. **Se sumó al plan**, por el mismo motivo que el de turnos: sin esto no hay pantalla de facturación posible.
+- `POST /tenants/me/subscription/checkout` — el link para pagar el mes. Con `@Roles(OWNER, ADMINISTRATIVE)`: esto no es trabajo de mostrador, es la cuenta del negocio.
+- El aviso entra por **el mismo webhook** que los cobros de turnos. Como el aviso no dice de qué cobro es, se busca primero entre los pagos de turnos y después entre los de suscripción.
+- Cron diario a las 3 AM (`@nestjs/schedule`) que pasa a `PAST_DUE` lo vencido.
+- `@RequiresActiveSubscription()` + `ActiveSubscriptionGuard` (cuarto guard global) sobre el alta de turnos.
+
+**Lo que no se hizo, a propósito: débito automático.** Cobrar solos todos los
+meses es la API de *preapproval* de Mercado Pago, que es una integración
+distinta de la del checkout y no estaba en el plan. Hoy el mes se paga con un
+link, igual que una seña. Toda la parte de dominio —períodos, vencimiento,
+bloqueo, historial— ya está y no cambia el día que se enchufe el débito.
+
+**Qué se bloquea y qué no.** Se corta *crear valor nuevo* (turnos y series), no
+operar lo que ya existe: un negocio que debe sigue pudiendo ver su agenda,
+cancelar y reprogramar. Cortarle la lectura convierte un problema de cobranza en
+un problema para su clientela, que no tiene nada que ver.
+
+**Y deber no alcanza: hay que deber hace rato.** `SUBSCRIPTION_GRACE_DAYS`
+(default 7) es la ventana de tolerancia — una tarjeta que rebota se arregla en un
+día y dejar a un negocio sin agenda por eso es desproporcionado.
+
+**Responde 402, no 403.** Los dos son "no podés", pero un 403 se confunde con un
+problema de permisos: el 402 le dice al frontend, sin leer el mensaje, que lo
+que hay que hacer es pagar.
+
+**Dos cosas que hay que sostener:**
+
+1. **`Subscription.status` y `Tenant.subscriptionStatus` son la misma verdad.** La columna del tenant existe porque `/auth/me` la lee en cada request. Hay exactamente dos lugares que cambian el estado y los dos escriben **las dos columnas en la misma transacción**. Tocarlas por separado deja una ventana donde la app muestra un estado y bloquea por otro.
+2. **La renovación guarda el `periodEnd` de la fila del pago, no uno recalculado.** Es lo que hace que el aviso repetido de MP no corra el vencimiento un mes más cada vez. Hay un test que lo fija.
+
+⚠️ **El cron corre en cada instancia de la app.** `@nestjs/schedule` no coordina
+réplicas. No es un problema porque `expireLapsed` es idempotente, pero cualquier
+job que se agregue tiene que serlo también, hasta que exista el lock de la cola
+(Fase 8).
 
 **✅ Done cuando:** un cliente puede pagar la seña con MP y el webhook deja el turno `confirmed` solo. Pagos manuales registrables. Estado de suscripción consistente.
 

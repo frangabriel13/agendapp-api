@@ -1,59 +1,27 @@
 import { Module } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import type { Env } from '../../config/env.schema';
 import { AppointmentsModule } from '../appointments/appointments.module';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
+import { PaymentProviderModule } from './payment-provider.module';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
-import {
-  PAYMENT_PROVIDER,
-  type PaymentProvider,
-} from './providers/payment-provider.types';
-import { MercadoPagoProvider } from './providers/mercadopago.provider';
-import { SandboxPaymentProvider } from './providers/sandbox-payment.provider';
 import { WebhooksController } from './webhooks.controller';
 
 /**
- * Elige el proveedor **al arrancar**, no en cada cobro: si las credenciales
- * están mal, la app no levanta, en vez de descubrirlo con un cliente esperando
- * en el checkout.
- *
- * `envSchema` ya garantiza que con `mercadopago` hay token y secreto de
- * webhook, así que acá no hace falta volver a validarlo.
- */
-function createPaymentProvider(
-  config: ConfigService<Env, true>,
-): PaymentProvider {
-  if (config.get('PAYMENT_PROVIDER', { infer: true }) === 'mercadopago') {
-    return new MercadoPagoProvider(
-      config.get('MP_ACCESS_TOKEN', { infer: true }),
-      config.get('MP_WEBHOOK_SECRET', { infer: true }),
-    );
-  }
-
-  return new SandboxPaymentProvider();
-}
-
-/**
- * Pagos de turnos.
+ * Pagos de turnos, y el endpoint por donde entra todo aviso del proveedor.
  *
  * **No es `@Global`**, a diferencia de `MailModule`: cobrar es un dominio, no
  * infraestructura transversal.
  *
  * Importa `AppointmentsModule` porque **el estado de un turno lo escribe el
- * service de turnos**, incluso cuando el disparador es un pago. La dependencia
- * va en un solo sentido: turnos no sabe que existen los pagos.
+ * service de turnos**, incluso cuando el disparador es un pago. Y a
+ * `SubscriptionsModule` porque el webhook es uno solo para los dos tipos de
+ * cobro: el aviso llega sin decir de cuál es y hay que buscarlo en las dos
+ * tablas. Las dos dependencias van en un solo sentido — ni turnos ni
+ * suscripciones saben que existe este módulo.
  */
 @Module({
-  imports: [AppointmentsModule],
+  imports: [PaymentProviderModule, AppointmentsModule, SubscriptionsModule],
   controllers: [PaymentsController, WebhooksController],
-  providers: [
-    {
-      provide: PAYMENT_PROVIDER,
-      inject: [ConfigService],
-      useFactory: createPaymentProvider,
-    },
-    PaymentsService,
-  ],
-  exports: [PAYMENT_PROVIDER],
+  providers: [PaymentsService],
 })
 export class PaymentsModule {}

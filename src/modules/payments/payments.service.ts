@@ -25,6 +25,7 @@ import {
 } from '../../prisma/prisma.service';
 import { AppointmentsService } from '../appointments/appointments.service';
 import { isCanceled } from '../appointments/status-machine';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import type { AuthenticatedUser } from '../auth/types/jwt-payload';
 import { appointmentBalance, type AppointmentBalance } from './payment-balance';
 import type {
@@ -107,6 +108,7 @@ export class PaymentsService {
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
     private readonly appointments: AppointmentsService,
+    private readonly subscriptions: SubscriptionsService,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
     config: ConfigService<Env, true>,
   ) {
@@ -316,6 +318,12 @@ export class PaymentsService {
     const target = await this.locatePayment(providerPayment);
 
     if (!target) {
+      // El aviso no dice de qué cobro es, así que si no está entre los pagos de
+      // turnos hay que probar con los de suscripción antes de darlo por ajeno.
+      if (await this.subscriptions.applyWebhookPayment(providerPayment)) {
+        return { result: 'applied' };
+      }
+
       // Un pago que no es nuestro, o una fila que ya no existe. Se contesta 200:
       // reintentarlo no va a cambiar nada y solo genera ruido.
       this.logger.warn(
