@@ -992,6 +992,12 @@ model SubscriptionPayment {
   /// puede llegar repetido.
   mpPaymentId String? @unique @map("mp_payment_id") @db.VarChar(100)
 
+  /// La preferencia de checkout y su link, igual que en `AppointmentPayment`:
+  /// sin guardarlos, pedir el link dos veces generaría dos cobros vivos y el
+  /// negocio podría pagar el mismo mes dos veces.
+  mpPreferenceId String? @map("mp_preference_id") @db.VarChar(100)
+  checkoutUrl    String? @map("checkout_url") @db.Text
+
   periodStart   DateTime  @map("period_start") @db.Timestamptz
   periodEnd     DateTime  @map("period_end") @db.Timestamptz
   failureReason String?   @map("failure_reason") @db.Text

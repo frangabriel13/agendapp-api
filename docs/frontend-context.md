@@ -280,7 +280,7 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 
 ## Qué existe hoy y qué no
 
-**Disponible — 84 endpoints:**
+**Disponible — 86 endpoints:**
 
 | Área | Endpoints | Alcanza para |
 |---|---|---|
@@ -295,13 +295,14 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 | `/customer-tags` | 5 | CRUD de etiquetas ("VIP", "Debe seña") |
 | `/appointments` | 8 | Disponibilidad, agendar, agenda por rango, estados, reprogramar, series |
 | `/appointments/:id/payments` | 3 | Saldo del turno, link de pago online, pagos en efectivo y devoluciones |
+| `/tenants/me/subscription` | 2 | Estado de la suscripción del negocio y el link para pagar el mes |
 | `/webhooks` | 1 | Aviso de pago de Mercado Pago. **No lo llama el front** |
 | `/health` | 1 | Healthcheck |
 
 **Todavía no existe:**
 
-- Suscripciones del negocio a AgendApp (Fase 6, tramo 3)
 - Portal público de reservas (Fase 7)
+- Débito automático de la suscripción y devoluciones automáticas: hoy el mes se paga con un link, y una devolución se registra a mano
 
 No conviene diseñar contra estos: el contrato todavía no está definido y va a
 cambiar.
@@ -555,6 +556,40 @@ checkout: `/pago/exito`, `/pago/error` y `/pago/pendiente`. Ojo con `/pago/exito
 que el cliente vuelva por ahí **no garantiza** que el pago esté acreditado — el
 estado real sale de consultar el saldo del turno.
 
+### Detalle sobre la suscripción del negocio (Fase 6)
+
+Es la cuenta que el negocio le paga a AgendApp, distinta de lo que le cobra a su
+clientela. `GET /tenants/me/subscription` trae estado, plan, período, historial
+de cobros y dos campos que conviene mostrar juntos:
+
+- **`daysOverdue`** — días completos de atraso. `0` si está al día.
+- **`blocked`** — si ya no puede agendar turnos nuevos.
+
+**Deber no bloquea enseguida.** Hay una ventana de tolerancia (`graceDays`, hoy
+7 días): mientras dure, `daysOverdue` es mayor que cero pero `blocked` sigue en
+`false`. Ese es justo el momento de mostrar un aviso — después ya es tarde.
+
+**Cuando bloquea, la API devuelve `402 Payment Required`**, no 403. Es a
+propósito: un 403 se confunde con un problema de permisos, y el 402 le dice al
+front que lo que hay que hacer es pagar. Solo lo devuelven `POST /appointments`
+y `POST /appointments/recurring`.
+
+**Lo que sigue funcionando aunque el negocio deba:** ver la agenda, cancelar,
+reprogramar, y pagar la suscripción. Se corta crear turnos nuevos, nada más —
+cortarle la lectura a un negocio que debe castiga a su clientela, que no tiene
+nada que ver con la cobranza.
+
+**Los endpoints piden rol `OWNER` o `ADMINISTRATIVE`.** No es trabajo de
+mostrador: un profesional no tiene por qué ver cuánto paga su empleador.
+
+`POST /tenants/me/subscription/checkout` funciona igual que el de los turnos:
+devuelve un link, deja el cobro pendiente, y la suscripción se reactiva cuando
+llega el aviso del proveedor. Pedirlo dos veces devuelve el mismo link. Si el
+plan no tiene precio de lista (Empresa, que se cotiza con soporte) da 409.
+
+**Faltan tres pantallas de retorno**: `/suscripcion/exito`, `/suscripcion/error`
+y `/suscripcion/pendiente`.
+
 ### Detalle sobre la invitación de empleados
 
 Ahora **el link se manda por mail solo**. `POST /employees` igual lo sigue
@@ -566,22 +601,25 @@ en `true`, alcanza con decir "le mandamos un mail a ana@…".
 `POST /employees/activate` es público y es donde el empleado define su contraseña.
 La pantalla que lo recibe es `/activar?token=…`.
 
-### Tres pantallas nuevas que hay que construir
+### Qué falta del lado del front
 
-Los mails ya salen, y los links que mandan apuntan al front. Son rutas que
-todavía no existen:
+Los mails ya salen y sus links apuntan acá. Estado de cada pantalla:
 
-| Ruta | Qué recibe | Qué hace |
+| Ruta | Estado | Qué le falta |
 |---|---|---|
-| `/activar?token=` | Invitación de empleado | Pide contraseña → `POST /employees/activate` |
-| `/restablecer?token=` | Reset de contraseña | Pide contraseña nueva → `POST /auth/reset-password` |
-| `/verificar-email?token=` | Verificación de email | Llama sola a `POST /auth/verify-email` y muestra el resultado |
+| `/activar?token=` | ✅ hecha | Nada: ya llama a `POST /employees/activate` |
+| `/olvide-contrasena` | ⚠️ placeholder | Hoy dice "estará disponible muy pronto" y manda a soporte. **Ya no hace falta**: cablearla a `POST /auth/forgot-password` |
+| `/restablecer?token=` | ❌ falta | Pide contraseña nueva → `POST /auth/reset-password` |
+| `/verificar-email?token=` | ❌ falta | Llama sola a `POST /auth/verify-email` y muestra el resultado |
 
-Las tres reciben el token por query string, las tres son **públicas** (sin
-sesión) y las tres devuelven **400 con un mensaje ya escrito en castellano** si
-el link no sirve: mostralo tal cual. El token vale **una sola vez** — si el
-usuario recarga la página después de completar, el segundo intento da 400, así
-que conviene redirigir apenas sale bien en vez de dejarlo en la pantalla.
+Las que reciben token lo toman por query string, son **públicas** (sin sesión) y
+devuelven **400 con un mensaje ya escrito en castellano** si el link no sirve:
+mostralo tal cual. El token vale **una sola vez** — si el usuario recarga la
+página después de completar, el segundo intento da 400, así que conviene
+redirigir apenas sale bien en vez de dejarlo en la pantalla. `/activar` ya
+resuelve bien ese patrón (lee el token con `useSearchParams` dentro de un
+`Suspense`, para que el secreto no viaje en el payload del servidor): las dos
+que faltan pueden copiarlo.
 
 **`POST /auth/forgot-password` siempre devuelve 204**, exista o no la cuenta.
 No es un detalle de implementación: la UI **no puede** decir "ese email no está

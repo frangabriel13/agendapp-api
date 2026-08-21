@@ -111,6 +111,14 @@ const baseEnvSchema = z.object({
    * poner acá la URL que devuelva.
    */
   API_PUBLIC_URL: z.string().url().default('http://localhost:3001'),
+
+  /**
+   * Cuántos días de atraso se le toleran a un negocio antes de bloquearle el
+   * alta de turnos nuevos. Una tarjeta que rebota se arregla en un día, y
+   * dejarlo sin agenda por eso es desproporcionado. Nunca se bloquea la
+   * lectura: la clientela no tiene nada que ver con la cobranza.
+   */
+  SUBSCRIPTION_GRACE_DAYS: z.coerce.number().int().nonnegative().default(7),
 });
 
 /**

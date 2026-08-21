@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_PIPE } from '@nestjs/core';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import {
@@ -15,6 +16,7 @@ import {
   TenantContextModule,
 } from './common/tenant-context';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { ActiveSubscriptionGuard } from './common/guards/active-subscription.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { MailModule } from './common/mail';
 import { PrismaModule } from './prisma/prisma.module';
@@ -25,6 +27,7 @@ import { CustomerTagsModule } from './modules/customer-tags/customer-tags.module
 import { CustomersModule } from './modules/customers/customers.module';
 import { EmployeesModule } from './modules/employees/employees.module';
 import { PaymentsModule } from './modules/payments/payments.module';
+import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { ResourcesModule } from './modules/resources/resources.module';
 import { ServiceCategoriesModule } from './modules/service-categories/service-categories.module';
 import { ServicesModule } from './modules/services/services.module';
@@ -71,6 +74,10 @@ import type { Env } from './config/env.schema';
     // La lista vive en su propio archivo porque `main.ts` la necesita para
     // saber qué headers de rate limit exponer por CORS.
     ThrottlerModule.forRoot(THROTTLERS),
+    // Habilita los `@Cron(...)`. Hoy lo usa solo el vencimiento de
+    // suscripciones. Ojo: los jobs corren en CADA instancia de la app, así que
+    // todo lo que se agregue tiene que ser idempotente.
+    ScheduleModule.forRoot(),
     TenantContextModule,
     PrismaModule,
     MailModule,
@@ -85,6 +92,7 @@ import type { Env } from './config/env.schema';
     CustomersModule,
     CustomerTagsModule,
     AppointmentsModule,
+    SubscriptionsModule,
     PaymentsModule,
   ],
   controllers: [],
@@ -105,9 +113,14 @@ import type { Env } from './config/env.schema';
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     // Guard global: todo endpoint nace protegido; se abre con `@Public()`.
     { provide: APP_GUARD, useClass: JwtAuthGuard },
-    // Autorización por rol. Va último: necesita el `request.user` del anterior.
+    // Autorización por rol. Necesita el `request.user` del anterior.
     // No hace nada salvo que el handler declare `@Roles(...)`.
     { provide: APP_GUARD, useClass: RolesGuard },
+    // Estado de la suscripción del negocio. Va último porque es el más caro
+    // (pega a la base) y no tiene sentido pagarlo si ya se rechazó por token o
+    // por rol. No hace nada salvo que el handler declare
+    // `@RequiresActiveSubscription()`.
+    { provide: APP_GUARD, useClass: ActiveSubscriptionGuard },
   ],
 })
 export class AppModule implements NestModule {

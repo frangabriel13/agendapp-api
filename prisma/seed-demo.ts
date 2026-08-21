@@ -168,6 +168,9 @@ async function main(): Promise<void> {
         select: { id: true },
       });
 
+      const now = new Date();
+      const trialEndsAt = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+
       const tenant = await tx.tenant.create({
         data: {
           ownerUserId: owner.id,
@@ -175,11 +178,25 @@ async function main(): Promise<void> {
           businessName: DEMO.businessName,
           slug: DEMO.slug,
           subscriptionStatus: SubscriptionStatus.TRIAL,
-          trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+          trialEndsAt,
           branding: { create: { displayName: DEMO.businessName } },
           settings: { create: {} },
         },
         select: { id: true },
+      });
+
+      // La fila de suscripción, igual que la crea `AuthService.register`. Sin
+      // esto el negocio de demo no tiene de dónde sacar su estado de pago y
+      // `/tenants/me/subscription` devuelve 404: `Tenant.subscriptionStatus` es
+      // el espejo, no la fuente.
+      await tx.subscription.create({
+        data: {
+          tenantId: tenant.id,
+          planId: plan.id,
+          status: SubscriptionStatus.TRIAL,
+          currentPeriodStart: now,
+          currentPeriodEnd: trialEndsAt,
+        },
       });
 
       await tx.employee.create({

@@ -19,6 +19,7 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
+import { RequiresActiveSubscription } from '../../common/decorators/requires-active-subscription.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/types/jwt-payload';
 import { AppointmentsService } from './appointments.service';
@@ -77,6 +78,7 @@ export class AppointmentsController {
   }
 
   @Post()
+  @RequiresActiveSubscription()
   @ApiOperation({
     summary: 'Agenda un turno',
     description:
@@ -109,6 +111,7 @@ export class AppointmentsController {
 
   /** También antes de `@Get(':id')`, por el orden de resolución de rutas. */
   @Post('recurring')
+  @RequiresActiveSubscription()
   @ApiOperation({
     summary: 'Agenda una serie de turnos repetidos',
     description:
