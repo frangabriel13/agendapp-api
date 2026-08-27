@@ -10,7 +10,9 @@
 
 > **Fases 0 a 6 cerradas, más los mails transaccionales.** El corazón del sistema está: turnos, disponibilidad, recurrencia, y ahora cobros —señas de turnos y la suscripción del negocio—. Los mails se adelantaron (estaban diferidos con deadline "antes de la Fase 7") porque su única deuda real —no poder recuperar una contraseña sin entrar a la base a mano— no convenía arrastrarla más. Lo que sigue es la Fase 7 (portal público).
 >
-> ⚠️ **El backend va dos fases adelante del front**, que sigue con `/dashboard` y `/agenda` sobre datos mock desde que cerró la Fase 5. Ninguna de las formas de contrato de las últimas tres fases (paginación `{ data, meta }`, errores con campos extra, el `balance` de pagos) fue ejercitada todavía por una pantalla real.
+> **El front se puso al día el 2026-08-27**: cerró su propio roadmap con 76 de los 87 endpoints cableados y sin nada de mock. Las formas de contrato que venían sin ejercitar —paginación `{ data, meta }`, errores con campos extra, el `balance` de pagos, el 402 de la suscripción— ya pasaron por pantallas reales. De los 11 que quedan sueltos, uno es el webhook (que no llama el front), otro es `/health`, y el resto son endpoints del catálogo y de clientes que su pantalla usa parcialmente.
+>
+> El primer pedido que vino del front después de eso fue `GET /payments`: `/reportes` necesitaba lo **cobrado** de un mes y solo existía el saldo de a un turno.
 
 **Cimientos (Fase 0)**
 
@@ -744,6 +746,26 @@ job que se agregue tiene que serlo también, hasta que exista el lock de la cola
 (Fase 8).
 
 **✅ Done cuando:** un cliente puede pagar la seña con MP y el webhook deja el turno `confirmed` solo. Pagos manuales registrables. Estado de suscripción consistente.
+
+### ✅ 6.5 Lo cobrado por período — pedido del front (2026-08-27)
+
+`/reportes` necesitaba lo **cobrado** de un mes y solo existía el saldo de a un
+turno: un mes hubieran sido cientos de llamadas contra el throttling.
+
+- `GET /payments` — los cobros de un rango, paginados `{ data, meta }` y con los totales del rango entero. Controller aparte (`PaymentReportsController`): el otro cuelga de `appointments/:appointmentId/payments` y esto no es de un turno.
+- **Con `@Roles(OWNER, ADMINISTRATIVE)`, al revés que `PaymentsController`.** Registrar un cobro es trabajo de mostrador; leer toda la plata del negocio de un mes es otra pregunta, y el repo ya trata así esa clase de lectura (`GET /tenants/me/subscription`). La asimetría es deliberada y está escrita en el contrato del front, porque de afuera parece un agujero.
+- **Filtra por `paidAt`, no por `createdAt`.** Importa cuándo entró la plata. El único índice sobre el tenant era `(tenant_id, created_at)`, que para eso no sirve: se sumó `(tenant_id, paid_at)` **parcial** con `WHERE paid_at IS NOT NULL`, porque un pago pendiente o fallado no puede caer en un rango.
+- **Los días son días del calendario del negocio.** Un cobro de las 21:30 en Buenos Aires es de ese día; armando el rango en UTC caería en el siguiente y el mes no cerraría contra lo que el mostrador vio pasar. Hay un e2e que lo fija, y verificado mutando el arreglo.
+- **`status=PENDING` es un 400, no una lista vacía.** Por construcción esos pagos no pueden estar en el rango; dejar pasar el pedido convertiría el malentendido en una respuesta válida. El endpoint informa plata liquidada, no el estado de cobranza del mes.
+
+**Lo importante de este tramo no es el endpoint, es que no aparezca una segunda
+definición de "cuánto entró".** El saldo de un turno necesita su
+`totalPriceCents`, así que `appointmentBalance` no servía tal cual para un rango
+y el camino fácil era sumar a mano —que es exactamente el error clásico de esta
+tabla—. Se extrajo `paymentTotals` de `payment-balance.ts`: la regla de qué fila
+suma y qué fila resta, sin el turno alrededor. Los totales del rango salen de un
+`groupBy` en la base y **cada grupo entra a esa misma función** como si fuera un
+pago solo por su suma.
 
 ---
 

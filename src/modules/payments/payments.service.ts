@@ -16,7 +16,16 @@ import {
   PaymentStatus,
   type Prisma,
 } from '@prisma/client';
+import {
+  paginationMeta,
+  resolvePagination,
+} from '../../common/dto/pagination.dto';
 import { TenantContextService } from '../../common/tenant-context';
+import { parseDateOnly } from '../../common/utils/date-only.util';
+import {
+  MINUTES_PER_DAY,
+  zonedWallTimeToUtc,
+} from '../../common/utils/timezone.util';
 import type { Env } from '../../config/env.schema';
 import { scopedCreate } from '../../prisma/extensions';
 import {
@@ -27,7 +36,18 @@ import { AppointmentsService } from '../appointments/appointments.service';
 import { isCanceled } from '../appointments/status-machine';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import type { AuthenticatedUser } from '../auth/types/jwt-payload';
-import { appointmentBalance, type AppointmentBalance } from './payment-balance';
+import {
+  appointmentBalance,
+  paymentTotals,
+  type AppointmentBalance,
+} from './payment-balance';
+import type {
+  PaymentRangeItemDto,
+  PaymentRangeQueryDto,
+  PaymentRangeResponseDto,
+  PaymentRangeTotalsDto,
+  SettledPaymentStatus,
+} from './dto/payment-range.dto';
 import type {
   AppointmentPaymentsDto,
   CheckoutPaymentType,
@@ -83,6 +103,65 @@ type ChargeableAppointment = Prisma.AppointmentGetPayload<{
 
 function toPaymentResponse(row: PaymentRow): PaymentResponseDto {
   return { ...row };
+}
+
+/**
+ * Lo que muestra una fila del listado por rango.
+ *
+ * No trae `checkoutUrl` a propósito: ese link es para el cliente que tiene que
+ * pagar, no para un reporte de caja, y estas filas ya están acreditadas.
+ */
+const RANGE_SELECT = {
+  id: true,
+  amountCents: true,
+  currency: true,
+  paymentType: true,
+  paymentMethod: true,
+  status: true,
+  notes: true,
+  paidAt: true,
+  recordedBy: { select: { id: true, firstName: true, lastName: true } },
+  appointment: {
+    select: {
+      id: true,
+      startsAt: true,
+      customer: { select: { firstName: true, lastName: true } },
+      employee: {
+        select: { user: { select: { firstName: true, lastName: true } } },
+      },
+      branch: { select: { name: true } },
+    },
+  },
+} satisfies Prisma.AppointmentPaymentSelect;
+
+type RangeRow = Prisma.AppointmentPaymentGetPayload<{
+  select: typeof RANGE_SELECT;
+}>;
+
+function toRangeItem(row: RangeRow): PaymentRangeItemDto {
+  const { appointment } = row;
+
+  return {
+    id: row.id,
+    amountCents: row.amountCents,
+    currency: row.currency,
+    paymentType: row.paymentType,
+    paymentMethod: row.paymentMethod,
+    // Las dos son seguras por construcción: el filtro es por `paidAt`, y una
+    // fila sin fecha de acreditación no puede estar en el resultado. Por lo
+    // mismo su estado solo puede ser SUCCEEDED o REFUNDED.
+    status: row.status as SettledPaymentStatus,
+    paidAt: row.paidAt!,
+    notes: row.notes,
+    recordedBy: row.recordedBy,
+    appointment: {
+      id: appointment.id,
+      startsAt: appointment.startsAt,
+      customerName: `${appointment.customer.firstName} ${appointment.customer.lastName}`,
+      employeeName: `${appointment.employee.user.firstName} ${appointment.employee.user.lastName}`,
+      branchName: appointment.branch.name,
+    },
+  };
 }
 
 /**
@@ -587,6 +666,140 @@ export class PaymentsService {
     }
 
     return appointment;
+  }
+
+  /**
+   * Los cobros acreditados en un rango de días, con los totales del rango.
+   *
+   * **Devuelve plata liquidada, no el estado de cobranza del mes.** El filtro
+   * es por `paidAt` —cuándo entró la plata, no cuándo se creó la fila—, así
+   * que un cobro pendiente o fallado no aparece nunca: no tiene esa fecha. Lo
+   * que falta cobrar de un turno sale de su saldo
+   * (`GET /appointments/:id/payments`), no de contar filas pendientes acá.
+   *
+   * Un matiz que conviene saber antes de conciliar: **esto refleja el estado
+   * de hoy de los pagos de ese período, no una foto congelada.** Si un cobro
+   * de septiembre lo revierte el proveedor en octubre, el reporte de
+   * septiembre pasa a mostrarlo revertido — su `paidAt` sigue siendo el de
+   * septiembre. Es lo correcto para "cuánto entró", pero significa que el
+   * mismo rango puede dar distinto en dos momentos.
+   */
+  async findByRange(
+    query: PaymentRangeQueryDto,
+  ): Promise<PaymentRangeResponseDto> {
+    const where = await this.rangeFilter(query);
+    const { page, pageSize, skip, take } = resolvePagination(query);
+
+    const [rows, total, totals] = await Promise.all([
+      this.prisma.scoped.appointmentPayment.findMany({
+        where,
+        select: RANGE_SELECT,
+        // Lo más reciente primero, y el id desempata: sin un segundo criterio,
+        // dos cobros del mismo instante pueden cambiar de página entre pedidos
+        // y una fila se ve dos veces o ninguna.
+        orderBy: [{ paidAt: 'desc' }, { id: 'desc' }],
+        skip,
+        take,
+      }),
+      this.prisma.scoped.appointmentPayment.count({ where }),
+      this.rangeTotals(where),
+    ]);
+
+    return {
+      data: rows.map(toRangeItem),
+      meta: paginationMeta(total, { page, pageSize }),
+      totals,
+    };
+  }
+
+  /**
+   * El `where` del rango. **Los días son días del negocio, no de UTC.**
+   *
+   * Un cobro de las 21:30 en Buenos Aires es de ese día; armando el rango en
+   * UTC caería en el siguiente y los totales del mes no cerrarían contra lo
+   * que el mostrador vio pasar.
+   */
+  private async rangeFilter(
+    query: PaymentRangeQueryDto,
+  ): Promise<Prisma.AppointmentPaymentWhereInput> {
+    // El regex del DTO valida la forma y deja pasar un 31 de febrero; eso solo
+    // lo agarra el parseo, y sin esto saldría 500 en vez de 400.
+    parseDateOnly(query.from);
+    parseDateOnly(query.to);
+
+    if (query.from > query.to) {
+      throw new BadRequestException(
+        'El rango termina antes de empezar: revisá `from` y `to`',
+      );
+    }
+
+    const timezone = await this.tenantTimezone();
+
+    return {
+      // `gte`/`lt` sobre una columna nullable ya deja afuera los pendientes y
+      // los fallados: `paid_at IS NULL` no satisface ninguna comparación. Es
+      // también lo que permite que el índice parcial sirva.
+      paidAt: {
+        gte: zonedWallTimeToUtc(query.from, 0, timezone),
+        lt: zonedWallTimeToUtc(query.to, MINUTES_PER_DAY, timezone),
+      },
+      ...(query.status === undefined ? {} : { status: query.status }),
+      ...(query.paymentMethod === undefined
+        ? {}
+        : { paymentMethod: query.paymentMethod }),
+      ...(query.branchId === undefined && query.employeeId === undefined
+        ? {}
+        : {
+            appointment: {
+              ...(query.branchId === undefined
+                ? {}
+                : { branchId: query.branchId }),
+              ...(query.employeeId === undefined
+                ? {}
+                : { employeeId: query.employeeId }),
+            },
+          }),
+    };
+  }
+
+  /**
+   * Los totales del rango entero, agrupados en la base.
+   *
+   * **La regla de qué suma y qué resta sigue siendo `paymentTotals`.** Cada
+   * grupo entra como si fuera un pago solo por su suma, así que no aparece una
+   * segunda definición de "cuánto entró" escrita a mano acá — que es el error
+   * clásico de esta tabla.
+   */
+  private async rangeTotals(
+    where: Prisma.AppointmentPaymentWhereInput,
+  ): Promise<PaymentRangeTotalsDto> {
+    const groups = await this.prisma.scoped.appointmentPayment.groupBy({
+      by: ['status', 'paymentType'],
+      where,
+      _sum: { amountCents: true },
+    });
+
+    return paymentTotals(
+      groups.map((group) => ({
+        amountCents: group._sum.amountCents ?? 0,
+        paymentType: group.paymentType,
+        status: group.status,
+      })),
+    );
+  }
+
+  /** Los días del rango son días del calendario del negocio. */
+  private async tenantTimezone(): Promise<string> {
+    const tenantId = this.tenantContext.getTenantId();
+
+    const tenant = tenantId
+      ? await this.prisma.tenant.findUnique({
+          where: { id: tenantId },
+          select: { timezone: true },
+        })
+      : null;
+
+    return tenant?.timezone ?? 'America/Argentina/Buenos_Aires';
   }
 
   /** La moneda se congela en cada pago, copiada del negocio. */

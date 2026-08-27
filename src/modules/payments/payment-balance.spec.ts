@@ -1,5 +1,9 @@
 import { AppointmentPaymentType, PaymentStatus } from '@prisma/client';
-import { appointmentBalance, type CountablePayment } from './payment-balance';
+import {
+  appointmentBalance,
+  paymentTotals,
+  type CountablePayment,
+} from './payment-balance';
 
 const { DEPOSIT, FULL, REMAINDER, REFUND } = AppointmentPaymentType;
 const { PENDING, SUCCEEDED, FAILED, REFUNDED } = PaymentStatus;
@@ -151,5 +155,87 @@ describe('appointmentBalance', () => {
       expect(balance.fullyPaid).toBe(true);
       expect(balance.dueCents).toBe(0);
     });
+  });
+});
+
+/**
+ * `paymentTotals` es la misma regla sin el turno alrededor: la usa el listado
+ * por rango, que suma plata de muchos turnos y no tiene un precio contra el
+ * cual medir. Estos tests fijan **el corte**, no el saldo.
+ */
+describe('paymentTotals', () => {
+  it('sin pagos, todo en cero', () => {
+    expect(paymentTotals([])).toEqual({
+      chargedCents: 0,
+      refundedCents: 0,
+      netCents: 0,
+    });
+  });
+
+  it('suma los acreditados de cualquier tipo', () => {
+    expect(
+      paymentTotals([pago(30_000, DEPOSIT), pago(70_000, REMAINDER)]),
+    ).toEqual({ chargedCents: 100_000, refundedCents: 0, netCents: 100_000 });
+  });
+
+  it('un pago pendiente o fallado no entra', () => {
+    expect(
+      paymentTotals([
+        pago(50_000, FULL, SUCCEEDED),
+        pago(30_000, FULL, PENDING),
+        pago(20_000, FULL, FAILED),
+      ]),
+    ).toEqual({ chargedCents: 50_000, refundedCents: 0, netCents: 50_000 });
+  });
+
+  it('una devolución nuestra resta del neto y suma a lo devuelto', () => {
+    expect(paymentTotals([pago(100_000, FULL), pago(40_000, REFUND)])).toEqual({
+      chargedCents: 100_000,
+      refundedCents: 40_000,
+      netCents: 60_000,
+    });
+  });
+
+  /**
+   * El error clásico de esta tabla: un pago revertido por el proveedor **no**
+   * entra en lo cobrado —`REFUNDED` no está acreditado—, así que restarlo del
+   * neto lo contaría dos veces y el mes cerraría de menos.
+   */
+  it('un pago revertido por el proveedor no se cuenta dos veces', () => {
+    expect(
+      paymentTotals([pago(100_000, FULL), pago(25_000, FULL, REFUNDED)]),
+    ).toEqual({
+      chargedCents: 100_000,
+      refundedCents: 25_000,
+      netCents: 100_000,
+    });
+  });
+
+  it('las dos formas de devolver conviven', () => {
+    expect(
+      paymentTotals([
+        pago(100_000, FULL),
+        pago(25_000, FULL, REFUNDED),
+        pago(10_000, REFUND),
+      ]),
+    ).toEqual({
+      chargedCents: 100_000,
+      refundedCents: 35_000,
+      netCents: 90_000,
+    });
+  });
+
+  it('devolver más de lo cobrado deja el neto negativo', () => {
+    expect(paymentTotals([pago(30_000, FULL), pago(50_000, REFUND)])).toEqual({
+      chargedCents: 30_000,
+      refundedCents: 50_000,
+      netCents: -20_000,
+    });
+  });
+
+  it('una devolución todavía pendiente no resta', () => {
+    expect(
+      paymentTotals([pago(100_000, FULL), pago(40_000, REFUND, PENDING)]),
+    ).toEqual({ chargedCents: 100_000, refundedCents: 0, netCents: 100_000 });
   });
 });
