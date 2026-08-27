@@ -24,6 +24,16 @@ export interface CountablePayment {
   status: PaymentStatus;
 }
 
+/** Los tres cortes de plata que sale de un conjunto de pagos cualquiera. */
+export interface PaymentTotals {
+  /** Lo que se cobró, sin descontar nada. */
+  chargedCents: number;
+  /** Lo que volvió al cliente, por cualquiera de las dos vías. */
+  refundedCents: number;
+  /** Lo que quedó en la caja: cobrado menos devoluciones. */
+  netCents: number;
+}
+
 export interface AppointmentBalance {
   /** Lo que quedó en la caja: entradas menos devoluciones. */
   paidCents: number;
@@ -45,6 +55,38 @@ const settled = (payment: CountablePayment): boolean =>
 const sum = (payments: readonly CountablePayment[]): number =>
   payments.reduce((total, payment) => total + payment.amountCents, 0);
 
+/**
+ * Qué fila suma y qué fila resta. **Es la regla de arriba, y nada más.**
+ *
+ * Vive separada de `appointmentBalance` porque el saldo de un turno no es el
+ * único que la necesita: el listado de cobros por rango
+ * (`GET /payments`) suma plata de muchos turnos a la vez y no tiene un
+ * `totalPriceCents` contra el cual medir. Sin este corte, ese listado tendría
+ * que sumar a mano y aparecería una **segunda** definición de "cuánto entró",
+ * que es el error clásico de esta tabla.
+ *
+ * Sirve igual para un turno, para un mes o para una fila sola.
+ */
+export function paymentTotals(
+  payments: readonly CountablePayment[],
+): PaymentTotals {
+  const inflow = sum(payments.filter((p) => settled(p) && !isRefund(p)));
+  const outflow = sum(payments.filter((p) => settled(p) && isRefund(p)));
+
+  // Un pago que el proveedor revirtió también es plata que volvió, aunque no
+  // tenga una fila de devolución propia. No entra en `chargedCents` —`settled`
+  // lo deja afuera—, así que restarlo del neto lo contaría dos veces.
+  const reversed = sum(
+    payments.filter((p) => p.status === PaymentStatus.REFUNDED && !isRefund(p)),
+  );
+
+  return {
+    chargedCents: inflow,
+    refundedCents: outflow + reversed,
+    netCents: inflow - outflow,
+  };
+}
+
 export function appointmentBalance(
   appointment: {
     totalPriceCents: number;
@@ -52,20 +94,11 @@ export function appointmentBalance(
   },
   payments: readonly CountablePayment[],
 ): AppointmentBalance {
-  const inflow = sum(payments.filter((p) => settled(p) && !isRefund(p)));
-  const outflow = sum(payments.filter((p) => settled(p) && isRefund(p)));
-
-  // Un pago que el proveedor revirtió también es plata que volvió, aunque no
-  // tenga una fila de devolución propia.
-  const reversed = sum(
-    payments.filter((p) => p.status === PaymentStatus.REFUNDED && !isRefund(p)),
-  );
-
-  const paidCents = inflow - outflow;
+  const { netCents: paidCents, refundedCents } = paymentTotals(payments);
 
   return {
     paidCents,
-    refundedCents: outflow + reversed,
+    refundedCents,
     // Puede dar más que el total si las devoluciones superan lo cobrado, y está
     // bien: significa que le debemos plata al cliente.
     dueCents: Math.max(0, appointment.totalPriceCents - paidCents),

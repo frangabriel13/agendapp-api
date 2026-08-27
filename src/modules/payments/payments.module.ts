@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AppointmentsModule } from '../appointments/appointments.module';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { PaymentProviderModule } from './payment-provider.module';
+import { PaymentReportsController } from './payment-reports.controller';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
 import { WebhooksController } from './webhooks.controller';
@@ -21,7 +22,11 @@ import { WebhooksController } from './webhooks.controller';
  */
 @Module({
   imports: [PaymentProviderModule, AppointmentsModule, SubscriptionsModule],
-  controllers: [PaymentsController, WebhooksController],
+  controllers: [
+    PaymentsController,
+    PaymentReportsController,
+    WebhooksController,
+  ],
   providers: [PaymentsService],
 })
 export class PaymentsModule {}
