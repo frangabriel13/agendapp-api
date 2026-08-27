@@ -1,6 +1,15 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsUUID, Matches } from 'class-validator';
+import { Transform } from 'class-transformer';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsArray,
+  IsOptional,
+  IsUUID,
+  Matches,
+} from 'class-validator';
 import { DATE_ONLY_PATTERN } from '../../../common/utils/date-only.util';
+import { MAX_SERVICES_PER_APPOINTMENT } from './appointment.dto';
 
 const DATE_MESSAGE =
   'La fecha tiene que ser YYYY-MM-DD (por ejemplo 2026-09-01)';
@@ -11,10 +20,26 @@ export class AvailabilityQueryDto {
   branchId!: string;
 
   @ApiProperty({
-    description: 'Qué servicio. De acá salen la duración y el buffer.',
+    type: [String],
+    minItems: 1,
+    maxItems: MAX_SERVICES_PER_APPOINTMENT,
+    description:
+      'Qué servicios, repitiendo el parámetro: ' +
+      '`?serviceIds=<a>&serviceIds=<b>`. **Los mismos que se van a mandar al ' +
+      'agendar**: la duración del hueco es la suma de todos, buffers ' +
+      'incluidos, así que consultar con uno solo de un turno de varios ' +
+      'ofrece horarios en los que el turno después no entra.',
   })
-  @IsUUID()
-  serviceId!: string;
+  // Un solo valor llega como string y no como array: sin esto, pedir un
+  // servicio suelto —el caso más común— fallaría la validación.
+  @Transform(({ value }: { value: unknown }) =>
+    value === undefined || Array.isArray(value) ? value : [value],
+  )
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(MAX_SERVICES_PER_APPOINTMENT)
+  @IsUUID(undefined, { each: true })
+  serviceIds!: string[];
 
   @ApiProperty({
     example: '2026-09-01',
@@ -26,8 +51,8 @@ export class AvailabilityQueryDto {
 
   @ApiPropertyOptional({
     description:
-      'Si se omite, se consultan todos los que prestan ese servicio en esa ' +
-      'sucursal y cada slot dice quiénes pueden tomarlo.',
+      'Si se omite, se consultan todos los que prestan **todos** esos ' +
+      'servicios en esa sucursal y cada slot dice quiénes pueden tomarlo.',
   })
   @IsOptional()
   @IsUUID()
@@ -49,8 +74,8 @@ export class AvailabilitySlotDto {
   @ApiProperty({
     example: '2026-09-01T13:00:00.000Z',
     description:
-      'Incluye el buffer del servicio: es lo que el turno va a ocupar de ' +
-      'verdad, no solo lo que dura la atención.',
+      'Incluye los buffers: es lo que el turno va a ocupar de verdad, no solo ' +
+      'lo que dura la atención.',
   })
   endsAt!: Date;
 
@@ -70,11 +95,20 @@ export class AvailabilityResponseDto {
   })
   timezone!: string;
 
-  @ApiProperty({ example: 45 }) durationMinutes!: number;
+  @ApiProperty({
+    example: 45,
+    description: 'La suma de lo que dura cada servicio pedido.',
+  })
+  durationMinutes!: number;
 
   @ApiProperty({
     example: 15,
-    description: 'Lo que el profesional sigue ocupado después de atender.',
+    description:
+      'La suma de los buffers de los servicios pedidos. Con uno solo es lo ' +
+      'que el profesional sigue ocupado después de atender; **con varios hay ' +
+      'buffers en el medio**, así que no es "lo que queda al final" sino todo ' +
+      'el tiempo de limpieza del turno. Lo que se sostiene en los dos casos ' +
+      'es que `durationMinutes + bufferAfterMinutes` es lo que dura el hueco.',
   })
   bufferAfterMinutes!: number;
 
@@ -84,6 +118,15 @@ export class AvailabilityResponseDto {
       'Sirve para distinguir "cerrado" de "sin lugar".',
   })
   branchClosed!: boolean;
+
+  @ApiProperty({
+    description:
+      'Nadie presta **todos** los servicios pedidos en esa sucursal — o, si ' +
+      'se pasó `employeeId`, esa persona no los presta todos. Es el tercer ' +
+      'motivo por el que `slots` puede venir vacío, y el único que no se ' +
+      'arregla cambiando de día.',
+  })
+  noEmployeeForServices!: boolean;
 
   @ApiProperty({ type: [AvailabilitySlotDto] })
   slots!: AvailabilitySlotDto[];

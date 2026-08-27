@@ -12,7 +12,7 @@
 >
 > **El front se puso al día el 2026-08-27**: cerró su propio roadmap con 76 de los 87 endpoints cableados y sin nada de mock. Las formas de contrato que venían sin ejercitar —paginación `{ data, meta }`, errores con campos extra, el `balance` de pagos, el 402 de la suscripción— ya pasaron por pantallas reales. De los 11 que quedan sueltos, uno es el webhook (que no llama el front), otro es `/health`, y el resto son endpoints del catálogo y de clientes que su pantalla usa parcialmente.
 >
-> El primer pedido que vino del front después de eso fue `GET /payments`: `/reportes` necesitaba lo **cobrado** de un mes y solo existía el saldo de a un turno.
+> Los dos primeros pedidos que vinieron del front después de eso: `GET /payments` —`/reportes` necesitaba lo **cobrado** de un mes y solo existía el saldo de a un turno— y `serviceIds` en la disponibilidad, que ofrecía huecos donde un turno de varios servicios no entraba.
 
 **Cimientos (Fase 0)**
 
@@ -557,7 +557,7 @@ ALTER TABLE appointment_resources
 
 ### Disponibilidad
 
-`GET /appointments/availability?branchId=&serviceId=&date=&employeeId=`
+`GET /appointments/availability?branchId=&serviceIds=&date=&employeeId=`
 
 La cuenta es siempre la misma y cada paso es una función pura de
 `availability.ts`:
@@ -581,6 +581,21 @@ Decisiones tomadas al implementar:
 - **Los recursos de otras sucursales no cuentan**, y si un servicio requiere
   varios en la misma sucursal los necesita a todos. Es la intersección que la
   Fase 3 dejó explícitamente para acá.
+
+#### Varios servicios — pedido del front (2026-08-27)
+
+`POST /appointments` aceptaba `serviceIds` desde el principio, pero la
+disponibilidad pedía un `serviceId` único: corte y color en la misma visita
+—que es un caso normal— se consultaba con uno solo y **se ofrecían huecos donde
+el turno después no entra**. El síntoma era un 409 al confirmar un horario que
+la propia API había ofrecido.
+
+- `serviceIds` repetido en la query, con los mismos límites y validaciones que el alta.
+- **La duración sale de `totalsOf`, la misma función que usa el alta.** No hay una segunda cuenta: si las dos no coincidieran, el hueco ofrecido no sería el que después entra. Hay un e2e que reserva **el último hueco del día** y lo fija — el primero entra igual con la duración mal calculada, así que un test sobre el primero pasaba con el bug puesto.
+- **La validación también se reusa** (`loadServices`): mismos 400 por repetidos, inexistentes o desactivados. Un servicio que no existe pasó de 404 a 400, que es lo que ya contestaba el alta.
+- **Los candidatos son una intersección, no una unión.** Un turno lo atiende una sola persona: si Lucía hace corte y Ana hace color pero ninguna las dos, la respuesta es que nadie puede.
+- **`noEmployeeForServices`**, hermano de `branchClosed`. `slots: []` tenía tres motivos y solo se distinguían dos. Es el único que **no se arregla cambiando de día**, así que esconderlo detrás de "sin lugar" mandaba al usuario a probar fechas para siempre.
+- **Los dos motivos se resuelven juntos, no en cascada.** Si el cerrado cortara antes, un día de descanso taparía que además nadie presta la combinación. Cuesta una query indexada de más y los dos flags quedan siempre ciertos.
 
 ### Turnos
 

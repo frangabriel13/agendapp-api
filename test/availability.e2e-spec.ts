@@ -22,6 +22,7 @@ interface AvailabilityResponse {
   durationMinutes: number;
   bufferAfterMinutes: number;
   branchClosed: boolean;
+  noEmployeeForServices: boolean;
   slots: {
     startsAt: string;
     endsAt: string;
@@ -231,13 +232,19 @@ describe('Disponibilidad (e2e)', () => {
   const availability = async (
     query: Record<string, string> = {},
     expected = 200,
+    services?: string[],
   ): Promise<AvailabilityResponse> => {
     const params = new URLSearchParams({
       branchId,
-      serviceId,
       date: LUNES,
       ...query,
     });
+
+    // Repetido, no separado por comas: es como lo serializa `URLSearchParams`
+    // en el front y como lo describe el OpenAPI.
+    for (const id of services ?? [serviceId]) {
+      params.append('serviceIds', id);
+    }
 
     const response = await request(server())
       .get(`/appointments/availability?${params.toString()}`)
@@ -592,9 +599,182 @@ describe('Disponibilidad (e2e)', () => {
     });
   });
 
+  describe('Varios servicios en la misma visita', () => {
+    /** 30 minutos de atención más 15 de limpieza. */
+    let color: string;
+
+    const largoEnMinutos = (slot: {
+      startsAt: string;
+      endsAt: string;
+    }): number =>
+      (new Date(slot.endsAt).getTime() - new Date(slot.startsAt).getTime()) /
+      60_000;
+
+    beforeEach(async () => {
+      color = await createService({
+        name: 'Color',
+        durationMinutes: 30,
+        bufferAfterMinutes: 15,
+      });
+
+      await assignService(color, [{ employeeId, branchId }]);
+    });
+
+    it('el hueco mide la suma de los dos, buffers incluidos', async () => {
+      const uno = await availability();
+      const dos = await availability({}, 200, [serviceId, color]);
+
+      expect(uno.durationMinutes).toBe(60);
+
+      expect(dos.durationMinutes).toBe(90);
+      expect(dos.bufferAfterMinutes).toBe(15);
+
+      // La invariante que el front da por cierta: los dos números suman lo que
+      // el hueco dura de verdad.
+      expect(dos.durationMinutes + dos.bufferAfterMinutes).toBe(105);
+      expect(largoEnMinutos(dos.slots[0])).toBe(105);
+
+      // Y por lo tanto entran menos huecos en la misma jornada.
+      expect(dos.slots.length).toBeLessThan(uno.slots.length);
+    });
+
+    /**
+     * El test que ata las dos reglas. Si la disponibilidad y el alta no
+     * calcularan la duración igual, el horario que se ofrece sería uno en el
+     * que el turno después no entra: el usuario elige y se come un 409.
+     *
+     * **Va sobre el último hueco del día, no el primero.** Con una duración
+     * calculada de menos, los primeros entran igual —sobra jornada por
+     * delante— y el test pasaría con el bug puesto. El que no perdona es el
+     * último: ahí es donde una duración corta ofrece un horario que se pasa
+     * del cierre. Verificado mutando `totalsOf` a un solo servicio.
+     */
+    it('el último hueco que ofrece es exactamente el que después entra', async () => {
+      const dos = await availability({}, 200, [serviceId, color]);
+      const ultimo = dos.slots[dos.slots.length - 1];
+
+      await request(server())
+        .post('/appointments')
+        .set(...auth(tenant.accessToken))
+        .send({
+          branchId,
+          employeeId,
+          customerId: await createCustomer(),
+          serviceIds: [serviceId, color],
+          startsAt: ultimo.startsAt,
+        })
+        .expect(201);
+    });
+
+    it('solo aparecen los que prestan todos: es intersección, no unión', async () => {
+      const ana = await createProfessional([branchId], undefined, 'Ana');
+
+      // Ana hace color, pero no el otro servicio.
+      await assignService(color, [
+        { employeeId, branchId },
+        { employeeId: ana, branchId },
+      ]);
+
+      const soloColor = await availability({}, 200, [color]);
+      expect(soloColor.slots[0].employees).toHaveLength(2);
+
+      const losDos = await availability({}, 200, [serviceId, color]);
+      expect(losDos.slots[0].employees).toHaveLength(1);
+      expect(losDos.slots[0].employees[0].employeeId).toBe(employeeId);
+    });
+
+    it('nadie presta la combinación: no es "sin lugar"', async () => {
+      const depilacion = await createService({ name: 'Depilación' });
+      const ana = await createProfessional([branchId], undefined, 'Ana');
+
+      await assignService(depilacion, [{ employeeId: ana, branchId }]);
+
+      const respuesta = await availability({}, 200, [serviceId, depilacion]);
+
+      expect(respuesta).toMatchObject({
+        noEmployeeForServices: true,
+        branchClosed: false,
+        slots: [],
+      });
+    });
+
+    it('haber quién pero no tener lugar es otra cosa', async () => {
+      // El día entero ocupado por un turno ya agendado.
+      await createAppointment('09:00', '13:00');
+
+      const respuesta = await availability();
+
+      expect(respuesta).toMatchObject({
+        noEmployeeForServices: false,
+        branchClosed: false,
+        slots: [],
+      });
+    });
+
+    /**
+     * Los dos motivos se resuelven juntos y no en cascada: si el cerrado
+     * cortara antes, un día de descanso escondería que además nadie presta la
+     * combinación — que es el problema que no se arregla cambiando de fecha.
+     */
+    it('cerrado y sin quién lo preste se informan a la vez', async () => {
+      const depilacion = await createService({ name: 'Depilación' });
+      const ana = await createProfessional([branchId], undefined, 'Ana');
+
+      await assignService(depilacion, [{ employeeId: ana, branchId }]);
+
+      // El martes la sucursal no abre.
+      const respuesta = await availability({ date: '2026-09-08' }, 200, [
+        serviceId,
+        depilacion,
+      ]);
+
+      expect(respuesta).toMatchObject({
+        branchClosed: true,
+        noEmployeeForServices: true,
+        slots: [],
+      });
+    });
+
+    it('con employeeId, cuenta si esa persona los presta todos', async () => {
+      const ana = await createProfessional([branchId], undefined, 'Ana');
+
+      await assignService(color, [
+        { employeeId, branchId },
+        { employeeId: ana, branchId },
+      ]);
+
+      // Ana hace color pero no el otro: pedirle a ella los dos no da nadie.
+      const respuesta = await availability({ employeeId: ana }, 200, [
+        serviceId,
+        color,
+      ]);
+
+      expect(respuesta.noEmployeeForServices).toBe(true);
+    });
+
+    it('los servicios repetidos dan el mismo 400 que el alta', async () => {
+      await availability({}, 400, [serviceId, serviceId]);
+    });
+
+    it('un servicio suelto sigue andando igual que antes', async () => {
+      const respuesta = await availability({}, 200, [serviceId]);
+
+      expect(respuesta.durationMinutes).toBe(60);
+      expect(respuesta.bufferAfterMinutes).toBe(0);
+      expect(respuesta.noEmployeeForServices).toBe(false);
+      expect(horas(respuesta)).toEqual(['09:00', '10:00', '11:00', '12:00']);
+    });
+  });
+
   describe('Errores', () => {
-    it('404 si el servicio no existe', async () => {
-      await availability({ serviceId: randomUUID() }, 404);
+    /**
+     * Antes era 404 y ahora es 400: la disponibilidad valida los servicios con
+     * el mismo `loadServices` que el alta, y ahí un servicio que no existe en
+     * el negocio es un dato malo del pedido, no un recurso ausente. Que los dos
+     * endpoints contesten distinto por lo mismo era peor.
+     */
+    it('400 si el servicio no existe', async () => {
+      await availability({}, 400, [randomUUID()]);
     });
 
     it('404 si la sucursal no existe', async () => {

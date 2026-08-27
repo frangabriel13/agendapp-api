@@ -53,24 +53,35 @@ export class AppointmentsController {
    */
   @Get('availability')
   @ApiOperation({
-    summary: 'Huecos libres para reservar un servicio un día dado',
+    summary: 'Huecos libres para reservar uno o varios servicios un día dado',
     description:
       'Cruza el horario de la sucursal con el del profesional y le resta ' +
       'ausencias, turnos ya tomados y recursos ocupados. Los slots duran ' +
       '`durationMinutes + bufferAfterMinutes`: el buffer es tiempo en el que ' +
       'el profesional sigue ocupado, así que el último turno del día termina ' +
       'antes del cierre.\n\n' +
-      'Sin `employeeId` responde por todos los que prestan el servicio en esa ' +
-      'sucursal, y cada slot dice quiénes lo tienen libre.\n\n' +
+      '**Mandá los mismos `serviceIds` que vas a mandar al agendar.** La ' +
+      'duración del hueco es la suma de todos, buffers incluidos: consultar ' +
+      'con uno solo de un turno de varios ofrece horarios en los que el turno ' +
+      'después no entra.\n\n' +
+      'Sin `employeeId` responde por todos los que prestan **todos** esos ' +
+      'servicios en esa sucursal, y cada slot dice quiénes lo tienen libre.\n\n' +
+      '`slots` vacío tiene tres motivos distintos y la respuesta los ' +
+      'distingue: `branchClosed` (ese día no abre), `noEmployeeForServices` ' +
+      '(nadie presta esa combinación acá — el único que no se arregla ' +
+      'cambiando de día) y, con los dos en `false`, simplemente no hay lugar.' +
+      '\n\n' +
       '**No recorta los slots que ya pasaron**: describe lo que el horario ' +
       'permite, no lo que todavía se puede reservar. Una pantalla de reserva ' +
       'para el público tiene que filtrarlos.',
   })
   @ApiOkResponse({ type: AvailabilityResponseDto })
   @ApiBadRequestResponse({
-    description: 'Datos inválidos, o el servicio está desactivado',
+    description:
+      'Datos inválidos, servicios repetidos, alguno que no existe en el ' +
+      'negocio o alguno desactivado. Son los mismos 400 que el alta.',
   })
-  @ApiNotFoundResponse({ description: 'La sucursal o el servicio no existen' })
+  @ApiNotFoundResponse({ description: 'La sucursal no existe' })
   findAvailability(
     @Query() query: AvailabilityQueryDto,
   ): Promise<AvailabilityResponseDto> {
