@@ -184,6 +184,12 @@ export class AppointmentsService {
    * función pura de `availability.ts`, que es donde viven los tests de los casos
    * borde; acá solo se junta lo que hace falta de la base.
    *
+   * **Acepta varios servicios, igual que el alta.** El hueco tiene que medir
+   * la suma de todos —corte y color en la misma visita es un caso normal— y
+   * quien lo toma tiene que prestarlos **todos**: es una intersección de
+   * profesionales, no una unión. Consultar con un servicio de un turno de
+   * varios ofrecería horarios en los que el turno después no entra.
+   *
    * **Todo se convierte a instantes antes de operar.** El horario de atención
    * es hora de pared ("de 9 a 18") y los turnos son `TIMESTAMPTZ`: mezclarlos
    * sin pasar por la zona del negocio da resultados que fallan justo el día que
@@ -199,37 +205,60 @@ export class AppointmentsService {
     query: AvailabilityQueryDto,
   ): Promise<AvailabilityResponseDto> {
     const timezone = await this.tenantTimezone();
-    const service = await this.findServiceOrFail(query.serviceId);
+
+    // La misma validación que el alta, y a propósito: que existan, que sean de
+    // este negocio, que estén activos y que no vengan repetidos. Ofrecer
+    // huecos para un servicio que `POST /appointments` después rechaza sería
+    // peor que rechazarlo acá.
+    const services = await this.loadServices(query.serviceIds);
     await this.assertBranchExists(query.branchId);
 
-    const slotMinutes = service.durationMinutes + service.bufferAfterMinutes;
+    // **La duración sale de la misma regla que el alta** (`totalsOf`). Si las
+    // dos no coincidieran, el hueco que se ofrece no sería el que después
+    // entra, y el usuario elegiría un horario para comerse un 409.
+    const slotMinutes = totalsOf(services).minutes;
+    const durationMinutes = services.reduce(
+      (total, service) => total + service.durationMinutes,
+      0,
+    );
+
     const dayStart = zonedWallTimeToUtc(query.date, 0, timezone);
     const dayEnd = zonedWallTimeToUtc(query.date, MINUTES_PER_DAY, timezone);
 
-    const base: Omit<AvailabilityResponseDto, 'branchClosed' | 'slots'> = {
+    const base: Omit<
+      AvailabilityResponseDto,
+      'branchClosed' | 'noEmployeeForServices' | 'slots'
+    > = {
       date: query.date,
       timezone,
-      durationMinutes: service.durationMinutes,
-      bufferAfterMinutes: service.bufferAfterMinutes,
+      durationMinutes,
+      // Restado y no sumado aparte: así `durationMinutes + bufferAfterMinutes`
+      // sigue siendo el largo del hueco por construcción, aunque `totalsOf`
+      // cambie de cuenta algún día.
+      bufferAfterMinutes: slotMinutes - durationMinutes,
     };
 
-    const branchWindow = await this.branchWindow(
-      query.branchId,
-      query.date,
-      timezone,
-    );
+    // Los dos motivos de "sin lugar" se resuelven juntos y no en cascada,
+    // porque para quien mira son distintos: un día cerrado se arregla
+    // cambiando de fecha, que nadie preste la combinación no. Contestar solo
+    // el primero escondería el segundo.
+    const [branchWindow, employees] = await Promise.all([
+      this.branchWindow(query.branchId, query.date, timezone),
+      this.employeesForServices(query),
+    ]);
 
-    if (!branchWindow) {
-      return { ...base, branchClosed: true, slots: [] };
+    const noEmployeeForServices = employees.length === 0;
+
+    if (!branchWindow || noEmployeeForServices) {
+      return {
+        ...base,
+        branchClosed: !branchWindow,
+        noEmployeeForServices,
+        slots: [],
+      };
     }
 
     const branchOpen = [toInterval(branchWindow, query.date, timezone)];
-    const employees = await this.employeesForService(query);
-
-    if (employees.length === 0) {
-      return { ...base, branchClosed: false, slots: [] };
-    }
-
     const employeeIds = employees.map((employee) => employee.employeeId);
 
     const [schedules, timeOff, appointments, resourceBusy] = await Promise.all([
@@ -241,8 +270,11 @@ export class AppointmentsService {
       ),
       this.timeOffByEmployee(employeeIds, query.branchId, dayStart, dayEnd),
       this.appointmentsByEmployee(employeeIds, dayStart, dayEnd),
+      // Con varios servicios pueden hacer falta más de un recurso: la camilla
+      // de uno y la lámpara del otro. `resourceBusyIntervals` ya recibía una
+      // lista; lo único que pasaba es que la disponibilidad le mandaba uno.
       this.resourceBusyIntervals(
-        [query.serviceId],
+        query.serviceIds,
         query.branchId,
         dayStart,
         dayEnd,
@@ -285,7 +317,12 @@ export class AppointmentsService {
       (a, b) => a.startsAt.getTime() - b.startsAt.getTime(),
     );
 
-    return { ...base, branchClosed: false, slots };
+    return {
+      ...base,
+      branchClosed: false,
+      noEmployeeForServices: false,
+      slots,
+    };
   }
 
   /**
@@ -1183,12 +1220,21 @@ export class AppointmentsService {
    *
    * Los desactivados quedan afuera: siguen existiendo pero no atienden.
    */
-  private async employeesForService(
+  /**
+   * Quiénes pueden tomar el turno entero: los que prestan **todos** los
+   * servicios pedidos en esa sucursal.
+   *
+   * **Es una intersección, no una unión**, porque un turno lo atiende una sola
+   * persona. Si Lucía hace corte y Ana hace color pero ninguna las dos, la
+   * respuesta correcta es que nadie puede — devolver a las dos ofrecería
+   * horarios que después el alta rechaza.
+   */
+  private async employeesForServices(
     query: AvailabilityQueryDto,
   ): Promise<AvailableEmployeeDto[]> {
     const assignments = await this.prisma.scoped.employeeService.findMany({
       where: {
-        serviceId: query.serviceId,
+        serviceId: { in: query.serviceIds },
         branchId: query.branchId,
         ...(query.employeeId === undefined
           ? {}
@@ -1197,16 +1243,36 @@ export class AppointmentsService {
       },
       select: {
         employeeId: true,
+        serviceId: true,
         employee: {
           select: { user: { select: { firstName: true, lastName: true } } },
         },
       },
     });
 
-    return assignments.map((assignment) => ({
-      employeeId: assignment.employeeId,
-      employeeName: `${assignment.employee.user.firstName} ${assignment.employee.user.lastName}`,
-    }));
+    const required = new Set(query.serviceIds).size;
+
+    const byEmployee = new Map<
+      string,
+      { employeeName: string; services: Set<string> }
+    >();
+
+    for (const assignment of assignments) {
+      const entry = byEmployee.get(assignment.employeeId) ?? {
+        employeeName: `${assignment.employee.user.firstName} ${assignment.employee.user.lastName}`,
+        services: new Set<string>(),
+      };
+
+      entry.services.add(assignment.serviceId);
+      byEmployee.set(assignment.employeeId, entry);
+    }
+
+    return [...byEmployee.entries()]
+      .filter(([, entry]) => entry.services.size === required)
+      .map(([employeeId, entry]) => ({
+        employeeId,
+        employeeName: entry.employeeName,
+      }));
   }
 
   /**
@@ -1357,31 +1423,6 @@ export class AppointmentsService {
     }
 
     return tenant.timezone;
-  }
-
-  private async findServiceOrFail(
-    serviceId: string,
-  ): Promise<{ durationMinutes: number; bufferAfterMinutes: number }> {
-    const service = await this.prisma.scoped.service.findFirst({
-      where: { id: serviceId },
-      select: {
-        durationMinutes: true,
-        bufferAfterMinutes: true,
-        isActive: true,
-      },
-    });
-
-    if (!service) {
-      throw new NotFoundException('El servicio no existe');
-    }
-
-    if (!service.isActive) {
-      throw new BadRequestException(
-        'El servicio está desactivado: no se puede reservar',
-      );
-    }
-
-    return service;
   }
 
   private async assertBranchExists(branchId: string): Promise<void> {
