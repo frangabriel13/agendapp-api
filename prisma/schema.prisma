@@ -491,6 +491,24 @@ model EmployeeSchedule {
   @@map("employee_schedules")
 }
 
+/// Qué clase de ausencia es.
+///
+/// Existe porque `reason` es texto libre y el panel estaba adivinando la
+/// categoría por palabras clave: "me voy a Brasil" no dice "vacaciones" en
+/// ningún lado y caía en `OTHER`. `reason` sigue siendo la nota humana; esto
+/// es la parte que la máquina lee.
+///
+/// `LEAVE` es toda licencia —médica, de estudio, por maternidad—: separarlas
+/// obligaría a elegir entre cuatro opciones al cargar y ninguna cambia nada
+/// aguas abajo.
+enum TimeOffKind {
+  VACATION @map("vacation")
+  LEAVE    @map("leave")
+  OTHER    @map("other")
+
+  @@map("time_off_kind")
+}
+
 /// Vacaciones, licencias y bloqueos personales.
 ///
 /// `branchId` en null significa "en todas las sucursales", que es el caso
@@ -499,16 +517,17 @@ model EmployeeSchedule {
 /// Acá `startsAt`/`endsAt` SÍ son instantes (`TIMESTAMPTZ`), no hora de pared:
 /// una ausencia arranca un día y termina otro.
 model EmployeeTimeOff {
-  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId   String    @map("tenant_id") @db.Uuid
-  employeeId String    @map("employee_id") @db.Uuid
-  branchId   String?   @map("branch_id") @db.Uuid
-  startsAt   DateTime  @map("starts_at") @db.Timestamptz
-  endsAt     DateTime  @map("ends_at") @db.Timestamptz
-  reason     String?   @db.VarChar(255)
-  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz
-  deletedAt  DateTime? @map("deleted_at") @db.Timestamptz
+  id         String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String      @map("tenant_id") @db.Uuid
+  employeeId String      @map("employee_id") @db.Uuid
+  branchId   String?     @map("branch_id") @db.Uuid
+  kind       TimeOffKind @default(OTHER)
+  startsAt   DateTime    @map("starts_at") @db.Timestamptz
+  endsAt     DateTime    @map("ends_at") @db.Timestamptz
+  reason     String?     @db.VarChar(255)
+  createdAt  DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime    @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt  DateTime?   @map("deleted_at") @db.Timestamptz
 
   tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)

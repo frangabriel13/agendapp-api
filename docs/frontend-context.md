@@ -287,7 +287,7 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 | `/auth` | 10 | Toda la capa de sesión: registro, login, refresh, logout, perfil, cambio de contraseña, **recuperar la contraseña olvidada y confirmar el email** |
 | `/tenants` | 6 | Configuración del negocio, branding (colores y logo), preferencias |
 | `/branches` | 11 | CRUD de sucursales, horario semanal, feriados y días especiales |
-| `/employees` | 13 | CRUD, invitación con link, activación pública, permisos, asignación a sucursales, horario con turno partido, ausencias |
+| `/employees` | 13 | CRUD, invitación con link, activación pública, permisos, asignación a sucursales, horario con turno partido, ausencias **con tipo** |
 | `/service-categories` | 5 | CRUD de categorías del catálogo |
 | `/services` | 9 | CRUD de servicios, quién los presta y dónde, qué recursos requieren |
 | `/resources` | 5 | CRUD de camillas, salas y sillones por sucursal |
@@ -674,6 +674,26 @@ en `true`, alcanza con decir "le mandamos un mail a ana@…".
 
 `POST /employees/activate` es público y es donde el empleado define su contraseña.
 La pantalla que lo recibe es `/activar?token=…`.
+
+### Detalle sobre las ausencias
+
+Una ausencia trae **`kind`**, que dice de qué clase es: `VACATION`, `LEAVE` u
+`OTHER`. Está para que el panel **no tenga que adivinar la categoría leyendo el
+`reason`**, que es texto libre: "me voy a Brasil" no dice "vacaciones" en ningún
+lado. `reason` sigue siendo la nota humana y `kind` es la parte que la máquina
+lee.
+
+En `POST /employees/:id/time-off` el campo es **opcional**, así que nada se
+rompe si no lo mandás — pero sin él la ausencia queda `OTHER` y el problema
+vuelve. Un valor que no esté en la lista es **400**.
+
+`LEAVE` es toda licencia (médica, de estudio, por maternidad). No se separan
+porque obligaría a elegir entre cuatro opciones al cargar y ninguna cambia nada
+aguas abajo.
+
+**Las ausencias cargadas antes de que el campo existiera son `OTHER`.** No es
+que sean "otra cosa": es que no se sabe. Si el panel las muestra, conviene que
+`OTHER` se lea como "sin clasificar" y no como una categoría real.
 
 ### Qué falta del lado del front
 

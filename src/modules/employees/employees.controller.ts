@@ -242,7 +242,13 @@ export class EmployeesController {
 
   @Post(':id/time-off')
   @Roles(...MANAGERS)
-  @ApiOperation({ summary: 'Carga vacaciones o una ausencia' })
+  @ApiOperation({
+    summary: 'Carga vacaciones o una ausencia',
+    description:
+      '`kind` dice de qué clase es. Es opcional y sin él queda `OTHER`, pero ' +
+      'mandarlo es lo que evita que el panel adivine la categoría leyendo el ' +
+      '`reason`, que es texto libre.',
+  })
   @ApiCreatedResponse({ type: TimeOffResponseDto })
   @ApiForbiddenResponse({ description: 'Tu rol no puede cargar ausencias' })
   createTimeOff(

@@ -83,9 +83,9 @@ describe('SandboxPaymentProvider', () => {
       provider.paymentIdFromWebhook({
         headers: {},
         query: {},
-        body: { type: 'payment', data: { id: 'sandbox-payment-1' } },
+        body: { type: 'payment', data: { id: '112233445566' } },
       }),
-    ).toBe('sandbox-payment-1');
+    ).toBe('112233445566');
   });
 
   it('ignora los avisos que no son de un pago', () => {
@@ -111,5 +111,27 @@ describe('SandboxPaymentProvider', () => {
     provider.reset();
 
     expect(() => provider.lastPaymentId()).toThrow();
+  });
+
+  /**
+   * El contador vive en memoria y `mpPaymentId` vive en la base: si un sandbox
+   * nuevo reemitiera el id del anterior, el webhook del cobro de suscripción le
+   * pegaría a la fila del pago de turno de la corrida pasada —que se busca
+   * primero— y la suscripción no se confirmaría nunca. Es el bug que había en
+   * dev, así que esto es lo que hay que romper para reintroducirlo.
+   */
+  it('un sandbox nuevo no reemite los ids del anterior', async () => {
+    await provider.createCheckout(CHECKOUT);
+    const antes = provider.lastPaymentId();
+
+    provider.reset();
+    await provider.createCheckout(CHECKOUT);
+
+    expect(provider.lastPaymentId()).not.toBe(antes);
+
+    const otroProceso = new SandboxPaymentProvider();
+    await otroProceso.createCheckout(CHECKOUT);
+
+    expect(otroProceso.lastPaymentId()).not.toBe(antes);
   });
 });
