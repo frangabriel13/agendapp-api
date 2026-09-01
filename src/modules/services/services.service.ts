@@ -32,6 +32,7 @@ const SERVICE_SELECT = {
   bufferAfterMinutes: true,
   color: true,
   isActive: true,
+  publiclyBookable: true,
   createdAt: true,
   updatedAt: true,
   category: { select: { id: true, name: true } },
@@ -119,6 +120,7 @@ export class ServicesService {
       bufferAfterMinutes: dto.bufferAfterMinutes,
       color: dto.color,
       isActive: dto.isActive,
+      publiclyBookable: dto.publiclyBookable,
     });
 
     if (isEmpty(data)) {

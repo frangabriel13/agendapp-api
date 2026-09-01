@@ -17,6 +17,7 @@ import {
 } from './common/tenant-context';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { ActiveSubscriptionGuard } from './common/guards/active-subscription.guard';
+import { PublicTenantGuard } from './common/guards/public-tenant.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { MailModule } from './common/mail';
 import { PrismaModule } from './prisma/prisma.module';
@@ -27,6 +28,7 @@ import { CustomerTagsModule } from './modules/customer-tags/customer-tags.module
 import { CustomersModule } from './modules/customers/customers.module';
 import { EmployeesModule } from './modules/employees/employees.module';
 import { PaymentsModule } from './modules/payments/payments.module';
+import { PublicModule } from './modules/public/public.module';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { ResourcesModule } from './modules/resources/resources.module';
 import { ServiceCategoriesModule } from './modules/service-categories/service-categories.module';
@@ -94,6 +96,7 @@ import type { Env } from './config/env.schema';
     AppointmentsModule,
     SubscriptionsModule,
     PaymentsModule,
+    PublicModule,
   ],
   controllers: [],
   providers: [
@@ -116,6 +119,12 @@ import type { Env } from './config/env.schema';
     // Autorización por rol. Necesita el `request.user` del anterior.
     // No hace nada salvo que el handler declare `@Roles(...)`.
     { provide: APP_GUARD, useClass: RolesGuard },
+    // Portal público: resuelve el negocio por el `:slug` de la URL y lo monta
+    // en el contexto. Va DESPUÉS de `JwtAuthGuard` (que ya honró el `@Public()`
+    // y no dejó contexto) y ANTES del de suscripción, que necesita el tenant
+    // resuelto para poder cortar. No hace nada salvo que la ruta declare
+    // `@PublicTenant()`.
+    { provide: APP_GUARD, useClass: PublicTenantGuard },
     // Estado de la suscripción del negocio. Va último porque es el más caro
     // (pega a la base) y no tiene sentido pagarlo si ya se rechazó por token o
     // por rol. No hace nada salvo que el handler declare

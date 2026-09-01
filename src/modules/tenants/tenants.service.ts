@@ -59,6 +59,9 @@ const SETTINGS_SELECT = {
   cancellationRefundPercentage: true,
   requireDepositForBooking: true,
   defaultBufferMinutes: true,
+  publicBookingEnabled: true,
+  minBookingNoticeMinutes: true,
+  maxBookingDaysAhead: true,
   updatedAt: true,
 } satisfies Prisma.TenantSettingsSelect;
 
@@ -188,6 +191,9 @@ export class TenantsService {
       cancellationRefundType: dto.cancellationRefundType,
       requireDepositForBooking: dto.requireDepositForBooking,
       defaultBufferMinutes: dto.defaultBufferMinutes,
+      publicBookingEnabled: dto.publicBookingEnabled,
+      minBookingNoticeMinutes: dto.minBookingNoticeMinutes,
+      maxBookingDaysAhead: dto.maxBookingDaysAhead,
     });
 
     // El porcentaje se recalcula solo si el PATCH tocó la política de reembolso.

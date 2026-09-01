@@ -10,7 +10,9 @@
 
 > **Fases 0 a 6 cerradas, más los mails transaccionales.** El corazón del sistema está: turnos, disponibilidad, recurrencia, y ahora cobros —señas de turnos y la suscripción del negocio—. Los mails se adelantaron (estaban diferidos con deadline "antes de la Fase 7") porque su única deuda real —no poder recuperar una contraseña sin entrar a la base a mano— no convenía arrastrarla más.
 >
-> **Antes de la Fase 7 se cerró una tanda de deuda chica pedida por el front (2026-09-01).** El front cerró su roadmap y quedaron cuatro cosas del backend, las cuatro hechas: el tipo de ausencia (§2.3), el horario y las ausencias de todo el equipo en un pedido (§2.4), lo que **falta** cobrar de un mes (§6.6) y el choque de ids del sandbox (§6.7). Fueron primero porque es deuda concreta contra deuda hipotética: el portal público todavía no tiene a nadie esperándolo. **Ahora sí, lo que sigue es la Fase 7.**
+> **La Fase 7 arrancó el 2026-09-01**: el portal ya se **ve** (negocio, sucursales, servicios, sin token) y las cinco decisiones de producto están tomadas. Falta la parte que **reserva**: disponibilidad recortada, el `POST`, los mails y la limpieza de los turnos abandonados.
+>
+> **Antes de la Fase 7 se cerró una tanda de deuda chica pedida por el front (2026-09-01).** El front cerró su roadmap y quedaron cuatro cosas del backend, las cuatro hechas: el tipo de ausencia (§2.3), el horario y las ausencias de todo el equipo en un pedido (§2.4), lo que **falta** cobrar de un mes (§6.6) y el choque de ids del sandbox (§6.7). Fueron primero porque era deuda concreta contra deuda hipotética.
 >
 > **El front terminó el 2026-09-01**: cerró su roadmap en 21 puntos con 83 de los 87 endpoints cableados y sin nada de mock. Los 4 que faltan son los que no corresponde llamar — `/health`, el webhook de Mercado Pago y `/auth/refresh`, que vive adentro de su `lib/api.ts`. Todas las formas de contrato que venían sin ejercitar —paginación `{ data, meta }`, errores con campos extra, el `balance` de pagos, el 402 de la suscripción— ya pasaron por pantallas reales. **Desde acá, lo que traba al front lo destraba el backend.**
 >
@@ -847,26 +849,89 @@ Verificado mutando: sin el prefijo, el test falla con `Expected: not
 
 ## 🌐 FASE 7 — Portal público
 
-### 7.1 Resolver tenant por slug
+> El plan original de esta fase eran tres bullets (resolver el slug, cuatro
+> endpoints, throttling). Revisado contra el código el 2026-09-01, falta bastante
+> más — y sobre todo falta lo que hoy no duele porque solo entra gente logueada.
 
-Endpoints públicos bajo `/public/:slug/...`. Un middleware específico:
+### ✅ 7.0 Cinco decisiones — resueltas el 2026-09-01
 
-1. Resuelve el `Tenant` por `slug`.
-2. Inyecta `tenantId` en el ALS (igual que el flujo autenticado).
-3. Marca el request como público (no hay `userId`).
+Ninguna era de implementación: las cinco cambiaban el producto. Quedaron así.
 
-### 7.2 Endpoints
+1. **Qué se expone → un flag propio, solo en `Service`.** `Service.publiclyBookable`, default `true`. Para sucursales y empleados alcanza con `isActive`, que ya existe. En servicios no: "existe en el catálogo" y "un desconocido lo puede elegir solo" son cosas distintas, y el retoque de garantía es el caso.
+2. **¿Elige profesional? → las dos, con "cualquiera" de default.** Sale gratis: `findAvailability` ya devuelve `employees[]` por hueco y ya acepta `employeeId` como filtro opcional. Elegir es filtrar.
+3. **¿Seña obligatoria? → sí, siempre que el servicio tenga una.** `requireDepositForBooking` sigue gobernando el mostrador y no se toca; el portal no lo mira. Un desconocido que reserva sin poner plata no tiene ningún costo por no aparecer. ⚠️ **Va atada a la limpieza de abandonados (§7.5)**: la seña obligatoria hace nacer el turno en `PENDING_PAYMENT`, que bloquea el hueco mientras espera.
+4. **¿Suscripción vencida? → el portal se ve, no se reserva.** No es una preferencia: es la regla que el repo ya tomó para el panel (`blocksNewBookings` corta el alta de turnos y nunca la lectura, con 7 días de gracia). Cortarle la página pública a quien se atrasó un día castiga a su clientela.
+5. **¿Cancela solo? → después.** Es una tabla de tokens nueva —`UserToken` cuelga de `User` y un cliente no es un `User`—, un mail más y la pregunta de la devolución de la seña. El mail de confirmación dice a dónde llamar.
 
-- `GET /public/:slug` — branding + info pública del negocio.
-- `GET /public/:slug/services` — servicios activos agrupados por categoría.
-- `GET /public/:slug/availability?serviceId=&branchId=&date=` — reusa el algoritmo de Fase 5.3.1.
-- `POST /public/:slug/appointments` — crea turno + customer si no existe (match por phone), inicia checkout MP.
+### ✅ 7.1 Migración: los campos que faltaban
 
-### 7.3 Throttling agresivo
+- **`minBookingNoticeMinutes` y `maxBookingDaysAhead`** en `TenantSettings`. **No es opcional**: `findAvailability` hoy no filtra los slots que ya pasaron —está escrito en la Fase 5.3.1, "el portal público va a tener que recortarlos"— así que sin esto se reserva para dentro de tres minutos, o para dentro de dos años.
+- **`publicBookingEnabled`** en `TenantSettings`. **Apaga las reservas, no la página**: el negocio que se llenó el mes deja de tomar turnos sin que se le caiga la URL que compartió. Por eso tampoco toca el `slug`. Viene prendido — un opt-in que hay que ir a buscar no lo activa nadie.
+- **`Service.publiclyBookable`**, default `true`: esconder es la excepción.
+- Los tres nacen `NOT NULL` con default, así que **no hubo backfill**. Un CHECK ata la ventana a algo que exista: `min >= 0` y `max BETWEEN 1 AND 730` — con `max = 0` no hay ningún día reservable y el portal contestaría siempre vacío, que se lee como un bug y no como una decisión.
+- Los tres settings salen y entran por `GET/PATCH /tenants/me/settings`; `publiclyBookable` por `PATCH /services/:id`.
+- **Token de gestión del turno**: no va, por la decisión 5.
 
-Aplicar `@Throttle()` específico a estos endpoints (ej. 30 req/min por IP).
+### ✅ 7.2 Resolver el tenant por slug
 
-**✅ Done cuando:** desde un browser anónimo podés ver el portal, elegir servicio, ver disponibilidad, reservar y pagar la seña.
+Endpoints públicos bajo `/public/:slug/...`.
+
+- **Guard, no middleware.** El plan viejo decía middleware; el repo ya resuelve el tenant en un guard (`JwtAuthGuard` llama a `tenantContext.set(...)` corriendo adentro del ALS que monta `TenantContextMiddleware`). Un guard tiene los route params en el `ExecutionContext`; un middleware de Express tendría que volver a parsear la URL.
+- **Orden en la cadena**: va antes de `ActiveSubscriptionGuard`, que hoy deja pasar cuando no hay tenant resuelto.
+- Slug inexistente, reservado o de un negocio borrado → **404**. Los reservados ya están en `slug.util.ts`, y `public` está en la lista.
+- El contexto queda con `tenantId` y **sin `userId`**, que ya está soportado: es el mismo caso del webhook de pagos.
+- **`@PublicTenant()` es `@Public()` + el marcador, en un solo decorador y a nivel controller.** Separarlos dejaría abierta la combinación "público y sin tenant", que es justo la que expondría datos de todos los negocios.
+- ⚠️ **El `deletedAt` del guard es lo único que tapa el catálogo de un negocio dado de baja.** La extension de soft delete filtra el borrado de *cada fila*, no el del negocio dueño: sin ese chequeo, `/services` y `/branches` de un negocio eliminado se siguen viendo enteros. El primer test que escribimos no lo detectaba —pegaba solo contra `GET /public/:slug`, donde el 404 sale igual por otro camino— y la mutación lo dejó al descubierto. Ahora recorre las tres rutas.
+
+### 7.3 Endpoints — los tres de lectura hechos
+
+- ✅ `GET /public/:slug` — branding, `timezone`, `currency` y las reglas de reserva. El timezone **no es opcional**: sin él el portal pinta las horas mal. `booking` publica la ventana para que el calendario deshabilite los días que no van, en vez de dejar que el visitante se coma un 400.
+- ✅ `GET /public/:slug/branches` — **no estaba en el plan original y hacía falta**: para reservar hay que elegir sucursal. Solo las activas, con su horario de atención.
+- ✅ `GET /public/:slug/services` — activos **y** públicos, agrupados por categoría. Los sin categoría van al final en un grupo `"Otros"` con `id: null` y **no se esconden**: es un descuido de carga, y sacarlo del portal lo convierte en plata que no entra.
+- ✅ Throttle propio del portal (5/s, 60/min), más ajustado que el global porque acá el único costo de pedir es tener una IP.
+- ✅ 16 e2e, incluido el aislamiento entre negocios y que nada del panel se filtre en la respuesta.
+- `GET /public/:slug/availability?serviceIds=&branchId=&date=` — reusa el algoritmo de la Fase 5.3.1 **recortando** los slots pasados y la ventana de reserva.
+- `POST /public/:slug/appointments` — matchea el cliente por teléfono (o lo crea), agenda con `createdVia: PUBLIC_BOOKING`, y arranca el checkout si hay seña.
+- `GET`/`DELETE /public/:slug/appointments/:token` — solo si sale la decisión 5.
+
+### 7.4 Qué hay que tocar del código que ya está
+
+- **`AppointmentsService.create` pide `createdByUserId: string` obligatorio** y el portal no tiene usuario. La columna ya es nullable; el método no.
+- **`AppointmentSource.PUBLIC_BOOKING` existe y todavía no lo usa nadie.**
+- **El recorte de slots**: decidir si vive en el endpoint público o adentro de `findAvailability` detrás de un flag. Si queda afuera son dos lugares que tienen que decir lo mismo, que es el error que ya nos costó un 409 con la duración de varios servicios.
+
+### 7.5 Seguridad — la parte que el plan viejo subestimaba
+
+Decía "throttling agresivo, ej. 30 req/min por IP". Eso es lo de menos.
+
+- ⚠️ **Un `PENDING_PAYMENT` que nadie paga bloquea el hueco para siempre.** Está en `BLOCKING_STATUSES` y **no hay ningún job que lo limpie** — el único `@Cron` del repo es el vencimiento de suscripciones. Hoy no duele porque esos turnos los crea el mostrador y alguien los mira; con el portal abierto, cada reserva abandonada es un hueco muerto. **Se resuelve acá, no en la Fase 8.**
+- **Enumeración de clientes por teléfono.** Si el POST responde distinto según el número ya exista, cualquiera averigua quién es cliente del negocio. La respuesta tiene que ser la misma en los dos casos — mismo criterio que `POST /auth/forgot-password`.
+- **Spam de turnos.** Alguien reserva 50 turnos con teléfonos inventados y le llena la agenda al negocio. El throttle por IP no alcanza para esto.
+- **No filtrar datos internos**: el empleado no sale con email, el cliente no sale con `notes`.
+- **CORS**: estos endpoints los llama un browser desde el dominio del portal.
+- Throttling propio, más ajustado que el global (`short` 10/s, `long` 100/min), y **distinto para el POST que para los GET**.
+
+### 7.6 Mails
+
+Faltan dos plantillas; hoy solo hay reset de contraseña, verificación de email e invitación de empleado.
+
+- Confirmación de reserva al cliente, con el link de pago si hay seña.
+- Aviso al negocio de que entró una reserva.
+
+### 7.7 Tests y contrato
+
+- e2e completo **sin token**: ver el portal → servicios → disponibilidad → reservar → pagar.
+- Que el slug de un negocio no vea nada del otro.
+- Que una reserva pública no pueda pisar un turno existente.
+- Que la ventana de reserva se respete en las dos puntas.
+- `docs/frontend-context.md`, que es de donde sale la copia del front.
+
+### Fuera de alcance, aunque tienten
+
+- **Login del cliente.** Esto es reserva anónima, no un portal con cuentas.
+- **Recordatorios automáticos.** Necesitan la cola de la Fase 8.
+
+**✅ Done cuando:** desde un browser anónimo podés ver el portal, elegir servicio, ver disponibilidad, reservar y pagar la seña — y una reserva abandonada libera el hueco sola.
 
 ---
 
