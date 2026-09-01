@@ -41,6 +41,14 @@ import {
   paymentTotals,
   type AppointmentBalance,
 } from './payment-balance';
+import {
+  MAX_RECEIVABLES_RANGE_DAYS,
+  OWING_APPOINTMENT_STATUSES,
+  type PaymentReceivablesQueryDto,
+  type PaymentReceivablesResponseDto,
+  type ReceivableItemDto,
+  type ReceivablesTotalsDto,
+} from './dto/payment-receivables.dto';
 import type {
   PaymentRangeItemDto,
   PaymentRangeQueryDto,
@@ -161,6 +169,69 @@ function toRangeItem(row: RangeRow): PaymentRangeItemDto {
       employeeName: `${appointment.employee.user.firstName} ${appointment.employee.user.lastName}`,
       branchName: appointment.branch.name,
     },
+  };
+}
+
+const RECEIVABLE_SELECT = {
+  id: true,
+  startsAt: true,
+  status: true,
+  totalPriceCents: true,
+  depositAmountCents: true,
+  customer: { select: { firstName: true, lastName: true, phone: true } },
+  employee: {
+    select: { user: { select: { firstName: true, lastName: true } } },
+  },
+  branch: { select: { name: true } },
+  // El saldo no se guarda: sale de estas filas, por `appointmentBalance`.
+  payments: { select: { amountCents: true, paymentType: true, status: true } },
+} satisfies Prisma.AppointmentSelect;
+
+type ReceivableRow = Prisma.AppointmentGetPayload<{
+  select: typeof RECEIVABLE_SELECT;
+}>;
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Suma la deuda del rango entero.
+ *
+ * No hay `groupBy` posible: `dueCents` es por turno y ya viene calculado por
+ * `appointmentBalance`, así que esto solo lo acumula. La regla de qué pago
+ * suma y qué pago resta sigue viviendo en un solo lugar.
+ */
+function receivablesTotals(
+  items: readonly ReceivableItemDto[],
+): ReceivablesTotalsDto {
+  return items.reduce<ReceivablesTotalsDto>(
+    (totals, item) => ({
+      appointments: totals.appointments + 1,
+      totalPriceCents: totals.totalPriceCents + item.totalPriceCents,
+      paidCents: totals.paidCents + item.paidCents,
+      dueCents: totals.dueCents + item.dueCents,
+    }),
+    { appointments: 0, totalPriceCents: 0, paidCents: 0, dueCents: 0 },
+  );
+}
+
+function toReceivable(row: ReceivableRow, currency: string): ReceivableItemDto {
+  const balance = appointmentBalance(row, row.payments);
+
+  return {
+    appointmentId: row.id,
+    startsAt: row.startsAt,
+    status: row.status,
+    customerName: `${row.customer.firstName} ${row.customer.lastName}`,
+    customerPhone: row.customer.phone,
+    employeeName: `${row.employee.user.firstName} ${row.employee.user.lastName}`,
+    branchName: row.branch.name,
+    currency,
+    totalPriceCents: row.totalPriceCents,
+    depositAmountCents: row.depositAmountCents,
+    paidCents: balance.paidCents,
+    refundedCents: balance.refundedCents,
+    dueCents: balance.dueCents,
+    depositCovered: balance.depositCovered,
   };
 }
 
@@ -709,6 +780,82 @@ export class PaymentsService {
       data: rows.map(toRangeItem),
       meta: paginationMeta(total, { page, pageSize }),
       totals,
+    };
+  }
+
+  /**
+   * Lo que **falta** cobrar de un rango.
+   *
+   * **Es un reporte de turnos, no de pagos, y esa es toda la idea.** `GET
+   * /payments` filtra por `paidAt`: un cobro pendiente no tiene fecha de
+   * acreditación, así que no puede caer en ningún rango y la deuda del mes era
+   * invisible salvo mirando turno por turno. Acá la fecha de una deuda es la
+   * del **turno**, que es la única que existe.
+   *
+   * **El saldo sale de `appointmentBalance`, fila por fila.** No hay un `WHERE
+   * due > 0` posible: `dueCents` no es una columna, es
+   * `max(0, total - pagado)`. Empujarlo a SQL obligaría a escribir la regla de
+   * qué pago suma y qué pago resta por segunda vez, que es exactamente el error
+   * que este módulo evita. El precio es que el rango entero pasa por memoria
+   * antes del recorte —de ahí el tope de días— y que el `total` del `meta`
+   * cuenta turnos que deben, no turnos del rango.
+   */
+  async findReceivables(
+    query: PaymentReceivablesQueryDto,
+  ): Promise<PaymentReceivablesResponseDto> {
+    // El regex del DTO valida la forma y deja pasar un 31 de febrero.
+    parseDateOnly(query.from);
+    parseDateOnly(query.to);
+
+    if (query.from > query.to) {
+      throw new BadRequestException(
+        'El rango termina antes de empezar: revisá `from` y `to`',
+      );
+    }
+
+    const timezone = await this.tenantTimezone();
+    const start = zonedWallTimeToUtc(query.from, 0, timezone);
+    const end = zonedWallTimeToUtc(query.to, MINUTES_PER_DAY, timezone);
+
+    if (
+      end.getTime() - start.getTime() >
+      MAX_RECEIVABLES_RANGE_DAYS * MS_PER_DAY
+    ) {
+      throw new BadRequestException(
+        `El rango no puede pasar de ${MAX_RECEIVABLES_RANGE_DAYS} días`,
+      );
+    }
+
+    const [rows, currency] = await Promise.all([
+      this.prisma.scoped.appointment.findMany({
+        where: {
+          // Días del calendario del negocio, igual que en `GET /payments`: un
+          // turno de las 23:00 en Buenos Aires es de ese día y no del siguiente.
+          startsAt: { gte: start, lt: end },
+          status: { in: [...OWING_APPOINTMENT_STATUSES] },
+          ...(query.branchId === undefined ? {} : { branchId: query.branchId }),
+          ...(query.employeeId === undefined
+            ? {}
+            : { employeeId: query.employeeId }),
+        },
+        select: RECEIVABLE_SELECT,
+        // El más viejo primero: lo que se debe hace más tiempo es lo que hay
+        // que reclamar. El id desempata para que paginar sea estable.
+        orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
+      }),
+      this.tenantCurrency(),
+    ]);
+
+    const owing = rows
+      .map((row) => toReceivable(row, currency))
+      .filter((item) => item.dueCents > 0);
+
+    const { page, pageSize, skip, take } = resolvePagination(query);
+
+    return {
+      data: owing.slice(skip, skip + take),
+      meta: paginationMeta(owing.length, { page, pageSize }),
+      totals: receivablesTotals(owing),
     };
   }
 
