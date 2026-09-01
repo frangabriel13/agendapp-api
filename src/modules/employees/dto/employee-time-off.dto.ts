@@ -1,6 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { TimeOffKind } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
+  IsEnum,
   IsISO8601,
   IsOptional,
   IsString,
@@ -27,6 +29,18 @@ export class CreateTimeOffDto {
   @IsOptional()
   @IsUUID('4')
   branchId?: string | null;
+
+  @ApiPropertyOptional({
+    enum: TimeOffKind,
+    default: TimeOffKind.OTHER,
+    description:
+      'Qué clase de ausencia es. Es opcional para no romper a quien ya venía ' +
+      'cargando ausencias sin el campo, pero mandarlo es lo que evita que el ' +
+      'panel tenga que adivinar la categoría leyendo el `reason`.',
+  })
+  @IsOptional()
+  @IsEnum(TimeOffKind)
+  kind?: TimeOffKind;
 
   @ApiProperty({ example: '2026-01-05T09:00:00-03:00' })
   @IsISO8601({ strict: true }, { message: ISO_MESSAGE })
@@ -70,7 +84,21 @@ export class TimeOffResponseDto {
   })
   branchId!: string | null;
 
+  @ApiProperty({
+    enum: TimeOffKind,
+    description:
+      'Las ausencias cargadas antes de que existiera el campo son `OTHER`: ' +
+      'no es que sean "otra cosa", es que no se sabe.',
+  })
+  kind!: TimeOffKind;
+
   @ApiProperty() startsAt!: Date;
   @ApiProperty() endsAt!: Date;
-  @ApiProperty({ nullable: true, type: String }) reason!: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    type: String,
+    description: 'La nota humana. `kind` es la parte que la máquina lee.',
+  })
+  reason!: string | null;
 }

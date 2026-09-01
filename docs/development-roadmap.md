@@ -8,9 +8,11 @@
 
 ## 📌 Estado actual del repo
 
-> **Fases 0 a 6 cerradas, más los mails transaccionales.** El corazón del sistema está: turnos, disponibilidad, recurrencia, y ahora cobros —señas de turnos y la suscripción del negocio—. Los mails se adelantaron (estaban diferidos con deadline "antes de la Fase 7") porque su única deuda real —no poder recuperar una contraseña sin entrar a la base a mano— no convenía arrastrarla más. Lo que sigue es la Fase 7 (portal público).
+> **Fases 0 a 6 cerradas, más los mails transaccionales.** El corazón del sistema está: turnos, disponibilidad, recurrencia, y ahora cobros —señas de turnos y la suscripción del negocio—. Los mails se adelantaron (estaban diferidos con deadline "antes de la Fase 7") porque su única deuda real —no poder recuperar una contraseña sin entrar a la base a mano— no convenía arrastrarla más.
 >
-> **El front se puso al día el 2026-08-27**: cerró su propio roadmap con 76 de los 87 endpoints cableados y sin nada de mock. Las formas de contrato que venían sin ejercitar —paginación `{ data, meta }`, errores con campos extra, el `balance` de pagos, el 402 de la suscripción— ya pasaron por pantallas reales. De los 11 que quedan sueltos, uno es el webhook (que no llama el front), otro es `/health`, y el resto son endpoints del catálogo y de clientes que su pantalla usa parcialmente.
+> **Antes de la Fase 7 va una tanda de deuda chica pedida por el front (2026-09-01).** El front cerró su roadmap y quedaron cuatro cosas del backend: el tipo de ausencia, un endpoint que traiga horarios y ausencias de todo el equipo juntos, poder ver lo que **falta** cobrar de un mes y el choque de ids del sandbox. Cada uno queda anotado en la fase donde vive. Se hacen primero porque es deuda concreta contra deuda hipotética: el portal público todavía no tiene a nadie esperándolo. Después sí, la Fase 7.
+>
+> **El front terminó el 2026-09-01**: cerró su roadmap en 21 puntos con 83 de los 87 endpoints cableados y sin nada de mock. Los 4 que faltan son los que no corresponde llamar — `/health`, el webhook de Mercado Pago y `/auth/refresh`, que vive adentro de su `lib/api.ts`. Todas las formas de contrato que venían sin ejercitar —paginación `{ data, meta }`, errores con campos extra, el `balance` de pagos, el 402 de la suscripción— ya pasaron por pantallas reales. **Desde acá, lo que traba al front lo destraba el backend.**
 >
 > Los dos primeros pedidos que vinieron del front después de eso: `GET /payments` —`/reportes` necesitaba lo **cobrado** de un mes y solo existía el saldo de a un turno— y `serviceIds` en la disponibilidad, que ofrecía huecos donde un turno de varios servicios no entraba.
 
@@ -448,6 +450,18 @@ Validar `maxEmployees` del plan al crear (incluye al owner — chequear `is_owne
 - **Tests**: 47 e2e (invitar → activar → loguear, límites del plan, aislamiento entre negocios) + 43 unitarios.
 
 **✅ Done cuando:** se puede crear una sucursal con horarios, invitar un empleado, asignarle sucursales y un horario semanal distinto por sucursal.
+
+### ✅ 2.3 Tipo de ausencia — pedido del front (2026-09-01)
+
+`reason` es texto libre y el panel estaba **adivinando la categoría por palabras
+clave**: "me voy a Brasil" no dice "vacaciones" en ningún lado y caía en "otro".
+Un archivo entero del front (`absenceKind.ts`) existía solo para eso.
+
+- **Enum `TimeOffKind` con tres valores**: `VACATION`, `LEAVE`, `OTHER`. `LEAVE` es toda licencia —médica, de estudio, por maternidad—: separarlas obligaría a elegir entre cuatro opciones al cargar y ninguna cambia nada aguas abajo. Un valor fuera de la lista es 400.
+- **La columna es `NOT NULL DEFAULT 'other'`**, así que no hubo backfill a mano y el POST sigue andando sin el campo. Las ausencias viejas quedan `OTHER`, que acá significa "no se sabe", no "otra cosa" — está anotado en el contrato para que el panel no lo muestre como una categoría real.
+- **El default vive en un solo lado.** El servicio no manda `kind` cuando el DTO no lo trae, en vez de poner `OTHER` a mano: con el valor escrito en dos lugares, tarde o temprano dicen cosas distintas.
+- **`reason` no se toca.** Sigue siendo la nota humana; `kind` es la parte que la máquina lee. La tentación era derivar uno del otro y es exactamente el bug que se está arreglando.
+- **Tests**: 3 e2e nuevos (guarda el tipo, sin tipo queda `OTHER`, un tipo inventado es 400), verificado mutando el arreglo — sacando el paso de `kind` al `create`, el primero falla con `"kind": "OTHER"` donde esperaba `"VACATION"`.
 
 ---
 

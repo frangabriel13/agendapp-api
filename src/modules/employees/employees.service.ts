@@ -81,6 +81,7 @@ const TIME_OFF_SELECT = {
   id: true,
   employeeId: true,
   branchId: true,
+  kind: true,
   startsAt: true,
   endsAt: true,
   reason: true,
@@ -507,6 +508,9 @@ export class EmployeesService {
       data: scopedCreate<Prisma.EmployeeTimeOffUncheckedCreateInput>({
         employeeId: id,
         branchId: dto.branchId ?? null,
+        // Sin `kind` queda `OTHER` por el default de la columna. No se fuerza
+        // acá para que el default viva en un solo lado.
+        ...(dto.kind === undefined ? {} : { kind: dto.kind }),
         startsAt,
         endsAt,
         reason: dto.reason ?? null,

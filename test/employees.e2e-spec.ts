@@ -932,6 +932,59 @@ describe('Employees (e2e)', () => {
       });
     });
 
+    /**
+     * `reason` es texto libre y el panel venía adivinando la categoría por
+     * palabras clave: "me voy a Brasil" no dice "vacaciones" en ningún lado.
+     * Por eso el tipo viaja aparte y no se deduce del texto.
+     */
+    it('guarda el tipo de ausencia que le mandan', async () => {
+      const response = await request(server())
+        .post(`/employees/${employeeId}/time-off`)
+        .set(...auth(tenant.accessToken))
+        .send({
+          kind: 'VACATION',
+          startsAt: '2026-01-05T09:00:00-03:00',
+          endsAt: '2026-01-20T09:00:00-03:00',
+          reason: 'me voy a Brasil',
+        })
+        .expect(201);
+
+      expect(response.body).toMatchObject({ kind: 'VACATION' });
+
+      const listado = await request(server())
+        .get(`/employees/${employeeId}/time-off`)
+        .set(...auth(tenant.accessToken))
+        .expect(200);
+
+      expect(listado.body).toMatchObject([{ kind: 'VACATION' }]);
+    });
+
+    /** El campo es opcional para no romper a quien ya cargaba ausencias. */
+    it('sin tipo queda OTHER', async () => {
+      const response = await request(server())
+        .post(`/employees/${employeeId}/time-off`)
+        .set(...auth(tenant.accessToken))
+        .send({
+          startsAt: '2026-01-05T09:00:00-03:00',
+          endsAt: '2026-01-20T09:00:00-03:00',
+        })
+        .expect(201);
+
+      expect(response.body).toMatchObject({ kind: 'OTHER' });
+    });
+
+    it('rechaza un tipo que no existe', async () => {
+      await request(server())
+        .post(`/employees/${employeeId}/time-off`)
+        .set(...auth(tenant.accessToken))
+        .send({
+          kind: 'FRANCACHELA',
+          startsAt: '2026-01-05T09:00:00-03:00',
+          endsAt: '2026-01-20T09:00:00-03:00',
+        })
+        .expect(400);
+    });
+
     it('rechaza una ausencia que termina antes de empezar', async () => {
       await request(server())
         .post(`/employees/${employeeId}/time-off`)

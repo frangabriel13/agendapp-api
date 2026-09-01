@@ -7,6 +7,7 @@ import {
   EmployeeRole,
   PrismaClient,
   SubscriptionStatus,
+  TimeOffKind,
 } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { normalizePhone } from '../src/common/utils/phone.util';
@@ -307,6 +308,7 @@ async function main(): Promise<void> {
           tenantId: tenant.id,
           employeeId: active.id,
           branchId: null,
+          kind: TimeOffKind.VACATION,
           startsAt: new Date('2026-09-07T03:00:00.000Z'),
           endsAt: new Date('2026-09-21T03:00:00.000Z'),
           reason: 'Vacaciones',

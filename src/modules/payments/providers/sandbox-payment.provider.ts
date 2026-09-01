@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { PaymentStatus } from '@prisma/client';
 import type {
@@ -21,6 +22,17 @@ import type {
  * En tests es lo que permite ejercitar todo el cobro sin red. Los métodos
  * `program`, `failNext` y `reset` existen para eso y no los usa nada del código
  * de negocio.
+ *
+ * **Los ids llevan un prefijo distinto por corrida y eso no es decorativo.**
+ * Antes salían de un contador solo (`sandbox-payment-1`), pero `mpPaymentId`
+ * queda **guardado en la base** y el contador vive en memoria: al reiniciar el
+ * server volvía a 1 y el id "nuevo" ya era de una fila vieja. El webhook busca
+ * primero entre los pagos de turnos y recién después entre los de suscripción,
+ * así que el aviso del cobro de la suscripción le acertaba al pago de turno del
+ * arranque anterior, contestaba `applied` y la suscripción se quedaba en
+ * `PENDING` para siempre. Con el prefijo, un id emitido no se puede volver a
+ * emitir —ni entre reinicios ni entre `reset()`—, y un link viejo falla fuerte
+ * ("no conozco ese pago") en vez de escribir en la fila equivocada.
  */
 @Injectable()
 export class SandboxPaymentProvider implements PaymentProvider {
@@ -30,6 +42,9 @@ export class SandboxPaymentProvider implements PaymentProvider {
 
   private readonly payments = new Map<string, ProviderPayment>();
 
+  /** Distinto por proceso y por `reset()`: es lo que hace únicos a los ids. */
+  private run = randomUUID().slice(0, 8);
+
   private sequence = 0;
 
   /** Mientras esté en `false`, todo aviso se considera no firmado. */
@@ -38,8 +53,8 @@ export class SandboxPaymentProvider implements PaymentProvider {
   createCheckout(request: CheckoutRequest): Promise<CheckoutSession> {
     this.sequence += 1;
 
-    const checkoutId = `sandbox-checkout-${this.sequence}`;
-    const paymentId = `sandbox-payment-${this.sequence}`;
+    const checkoutId = `sandbox-checkout-${this.run}-${this.sequence}`;
+    const paymentId = this.paymentId(this.sequence);
 
     // El pago nace aprobado: el camino que interesa probar es el de después
     // del cobro. Para probar un rechazo, el test usa `program`.
@@ -117,7 +132,7 @@ export class SandboxPaymentProvider implements PaymentProvider {
       throw new Error('Todavía no se creó ningún checkout');
     }
 
-    return `sandbox-payment-${this.sequence}`;
+    return this.paymentId(this.sequence);
   }
 
   /** Simula avisos con firma inválida. */
@@ -129,5 +144,12 @@ export class SandboxPaymentProvider implements PaymentProvider {
     this.payments.clear();
     this.sequence = 0;
     this.signaturesValid = true;
+    // También rota el prefijo: "como recién creado" incluye no reemitir un id
+    // que la base de un test anterior puede seguir teniendo.
+    this.run = randomUUID().slice(0, 8);
+  }
+
+  private paymentId(sequence: number): string {
+    return `sandbox-payment-${this.run}-${sequence}`;
   }
 }
