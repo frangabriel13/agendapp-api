@@ -280,7 +280,7 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 
 ## Qué existe hoy y qué no
 
-**Disponible — 89 endpoints:**
+**Disponible — 92 endpoints:**
 
 | Área | Endpoints | Alcanza para |
 |---|---|---|
@@ -297,12 +297,13 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 | `/appointments/:id/payments` | 3 | Saldo del turno, link de pago online, pagos en efectivo y devoluciones |
 | `/payments` | 2 | **Lo cobrado en un rango de fechas y lo que falta cobrar de ese rango**, los dos con totales. Es lo que necesita `/reportes` |
 | `/tenants/me/subscription` | 2 | Estado de la suscripción del negocio y el link para pagar el mes |
+| `/public/:slug` | 3 | **Portal público, sin token**: el negocio, sus sucursales y sus servicios reservables |
 | `/webhooks` | 1 | Aviso de pago de Mercado Pago. **No lo llama el front** |
 | `/health` | 1 | Healthcheck |
 
 **Todavía no existe:**
 
-- Portal público de reservas (Fase 7)
+- Reservar desde el portal público: la parte de *ver* ya está (`GET /public/:slug/...`), falta la disponibilidad recortada y el `POST` que agenda
 - Débito automático de la suscripción y devoluciones automáticas: hoy el mes se paga con un link, y una devolución se registra a mano
 
 No conviene diseñar contra estos: el contrato todavía no está definido y va a
@@ -665,6 +666,50 @@ Cuatro cosas que conviene tener claras:
 - **El rango no puede pasar de 92 días** (el otro endpoint no tiene tope porque pagina en la base; acá el saldo se calcula turno por turno). Más que eso es 400.
 
 ⚠️ **Pide `OWNER` o `ADMINISTRATIVE`**, igual que `GET /payments`.
+
+### Portal público (Fase 7, en curso)
+
+Los únicos endpoints de la API que **no llevan token**. Cuelgan de
+`/public/:slug`, donde el `slug` es el del negocio (sale de
+`GET /tenants/me`) — el mismo que va a ser la URL del portal.
+
+| Endpoint | Qué trae |
+|---|---|
+| `GET /public/:slug` | Branding, `timezone`, `currency` y las reglas de reserva |
+| `GET /public/:slug/branches` | Sucursales activas, con dirección, teléfono y horario de atención |
+| `GET /public/:slug/services` | Servicios reservables, agrupados por categoría |
+
+Un slug que no existe —o de un negocio dado de baja— es **404 con el mismo
+mensaje en los dos casos**, a propósito: distinguirlos dejaría averiguar qué
+slugs estuvieron tomados alguna vez.
+
+**`GET /public/:slug` trae `booking`, y ahí está lo que el calendario necesita
+para no adivinar:**
+
+| Campo | Qué hacer con él |
+|---|---|
+| `enabled` | En `false` el negocio no está tomando reservas online. **La página se sigue viendo** —servicios, precios, teléfono—, lo que no va es el botón de reservar |
+| `minNoticeMinutes` | Antelación mínima. Un hueco más cerca que esto no se ofrece |
+| `maxDaysAhead` | Hasta cuándo se puede reservar. Deshabilitá los días de más allá en vez de dejar que el visitante se coma un 400 |
+| `depositRequired` | **Siempre `true` en el portal.** Si el servicio tiene `depositAmountCents`, hay que pagarlo para confirmar |
+| `cancellationPolicyHours` | Para mostrar la política, que conviene decirla antes de cobrar |
+
+⚠️ **`depositRequired` no sigue al setting del panel.** En el mostrador manda
+`requireDepositForBooking` (que viene apagado): la clienta está enfrente y se
+cobra al final. En el portal la seña se cobra siempre que exista, porque un
+desconocido que reserva sin poner plata no tiene ningún costo por no aparecer.
+
+⚠️ **Un servicio puede existir y no estar en el portal.** Son dos campos
+distintos: `isActive` es "existe en el catálogo" y `publiclyBookable` es "un
+desconocido lo puede elegir solo". Un retoque de garantía está activo y no
+aparece acá. Los dos se editan desde `PATCH /services/:id`.
+
+Los servicios sin categoría vienen **al final**, en un grupo `"Otros"` con
+`id: null`. No se esconden: un servicio sin categorizar es un descuido de carga,
+y sacarlo del portal convertiría ese descuido en plata que no entra.
+
+**Lo que todavía no está**: la disponibilidad pública y el `POST` que agenda.
+Hasta que existan, el portal se puede maquetar entero pero no reserva.
 
 ### Detalle sobre la suscripción del negocio (Fase 6)
 

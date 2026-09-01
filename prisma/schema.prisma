@@ -279,10 +279,39 @@ model TenantSettings {
   cancellationPolicyHours      Int                    @default(24) @map("cancellation_policy_hours")
   cancellationRefundType       CancellationRefundType @default(FULL) @map("cancellation_refund_type")
   cancellationRefundPercentage Int?                   @map("cancellation_refund_percentage")
+  /// Gobierna el **mostrador**: con esto apagado, un turno con seña se
+  /// confirma igual y la seña se cobra cuando se cobra. El portal público NO
+  /// lo mira: ahí la seña se cobra siempre que exista, porque un desconocido
+  /// que reserva sin poner plata no tiene ningún costo por no aparecer.
   requireDepositForBooking     Boolean                @default(false) @map("require_deposit_for_booking")
   defaultBufferMinutes         Int                    @default(0) @map("default_buffer_minutes")
-  createdAt                    DateTime               @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt                    DateTime               @updatedAt @map("updated_at") @db.Timestamptz
+
+  /// Si el portal público acepta reservas.
+  ///
+  /// **Apaga las reservas, no la página.** El negocio que se llenó el mes o se
+  /// va de vacaciones quiere dejar de tomar turnos online sin que se le caiga
+  /// la URL que tiene compartida en Instagram: la clientela sigue viendo
+  /// servicios, precios y teléfono, y el botón de reservar no está. Por eso
+  /// tampoco se toca el `slug`.
+  ///
+  /// Viene prendido: la reserva online es la propuesta del producto, y un
+  /// opt-in que hay que ir a buscar no lo activa nadie.
+  publicBookingEnabled Boolean @default(true) @map("public_booking_enabled")
+
+  /// Cuánta antelación exige una reserva del portal.
+  ///
+  /// `findAvailability` describe lo que el horario permite y **no recorta lo
+  /// que ya pasó**: eso es correcto para el mostrador, que agenda a quien
+  /// llegó sin turno. En el portal, sin este piso, alguien reserva para dentro
+  /// de tres minutos.
+  minBookingNoticeMinutes Int @default(120) @map("min_booking_notice_minutes")
+
+  /// Hasta cuándo se puede reservar. El techo del mismo problema: sin esto,
+  /// alguien toma un turno para dentro de dos años.
+  maxBookingDaysAhead Int @default(60) @map("max_booking_days_ahead")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -558,20 +587,28 @@ model ServiceCategory {
 }
 
 model Service {
-  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId           String    @map("tenant_id") @db.Uuid
-  categoryId         String?   @map("category_id") @db.Uuid
-  name               String    @db.VarChar(120)
-  description        String?   @db.Text
-  durationMinutes    Int       @map("duration_minutes")
-  priceCents         Int       @map("price_cents")
-  depositAmountCents Int?      @map("deposit_amount_cents")
-  bufferAfterMinutes Int       @default(0) @map("buffer_after_minutes")
-  color              String?   @db.VarChar(7)
-  isActive           Boolean   @default(true) @map("is_active")
-  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt          DateTime  @updatedAt @map("updated_at") @db.Timestamptz
-  deletedAt          DateTime? @map("deleted_at") @db.Timestamptz
+  id                 String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String  @map("tenant_id") @db.Uuid
+  categoryId         String? @map("category_id") @db.Uuid
+  name               String  @db.VarChar(120)
+  description        String? @db.Text
+  durationMinutes    Int     @map("duration_minutes")
+  priceCents         Int     @map("price_cents")
+  depositAmountCents Int?    @map("deposit_amount_cents")
+  bufferAfterMinutes Int     @default(0) @map("buffer_after_minutes")
+  color              String? @db.VarChar(7)
+  isActive           Boolean @default(true) @map("is_active")
+
+  /// Si aparece en el portal público.
+  ///
+  /// **No es lo mismo que `isActive`**, y por eso son dos campos: "existe en el
+  /// catálogo" y "un desconocido lo puede reservar solo" son cosas distintas.
+  /// Un retoque de garantía se agenda si el negocio decide dárselo, no porque
+  /// alguien lo eligió de una lista. Viene prendido: esconder es la excepción.
+  publiclyBookable Boolean   @default(true) @map("publicly_bookable")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt        DateTime? @map("deleted_at") @db.Timestamptz
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   category ServiceCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)

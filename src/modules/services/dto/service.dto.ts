@@ -74,6 +74,15 @@ export class ServiceResponseDto {
   })
   isActive!: boolean;
 
+  @ApiProperty({
+    description:
+      'Si aparece en el portal público. **No es lo mismo que `isActive`**: ' +
+      'un servicio puede existir en el catálogo y agendarse desde el panel ' +
+      'sin que un desconocido pueda elegirlo solo (un retoque de garantía, ' +
+      'un precio especial). Un servicio inactivo no aparece igual.',
+  })
+  publiclyBookable!: boolean;
+
   @ApiProperty() createdAt!: Date;
   @ApiProperty() updatedAt!: Date;
 }
@@ -231,6 +240,15 @@ export class UpdateServiceDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Si aparece en el portal público. Apagarlo lo saca de ahí y lo deja ' +
+      'agendable desde el panel.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  publiclyBookable?: boolean;
 }
 
 /** Query string de `GET /services`. */
