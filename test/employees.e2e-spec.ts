@@ -1050,6 +1050,244 @@ describe('Employees (e2e)', () => {
     });
   });
 
+  describe('Horario y ausencias de todo el equipo', () => {
+    let ana: string;
+    let bruno: string;
+    let centro: string;
+    let palermo: string;
+
+    const FEBRERO = 'from=2026-02-01T00:00:00Z&to=2026-02-28T00:00:00Z';
+
+    const equipo = (token = tenant.accessToken) =>
+      request(server())
+        .get(`/employees/schedules?${FEBRERO}`)
+        .set(...auth(token));
+
+    beforeEach(async () => {
+      centro = await createBranch('Sucursal Centro');
+      palermo = await createBranch('Sucursal Palermo');
+
+      ana = (await invite({ firstName: 'Ana', lastName: 'Gómez' })).employee.id;
+      bruno = (await invite({ firstName: 'Bruno', lastName: 'Díaz' })).employee
+        .id;
+
+      for (const id of [ana, bruno]) {
+        await request(server())
+          .put(`/employees/${id}/branches`)
+          .set(...auth(tenant.accessToken))
+          .send({ branchIds: [centro, palermo] })
+          .expect(200);
+      }
+
+      await request(server())
+        .put(`/employees/${ana}/schedules`)
+        .set(...auth(tenant.accessToken))
+        .send({
+          shifts: [
+            {
+              branchId: centro,
+              dayOfWeek: 1,
+              startsAt: '09:00',
+              endsAt: '13:00',
+            },
+            {
+              branchId: palermo,
+              dayOfWeek: 2,
+              startsAt: '14:00',
+              endsAt: '18:00',
+            },
+          ],
+        })
+        .expect(200);
+
+      await request(server())
+        .put(`/employees/${bruno}/schedules`)
+        .set(...auth(tenant.accessToken))
+        .send({
+          shifts: [
+            {
+              branchId: palermo,
+              dayOfWeek: 1,
+              startsAt: '10:00',
+              endsAt: '16:00',
+            },
+          ],
+        })
+        .expect(200);
+
+      // Ana se va de vacaciones: sin sucursal, o sea en ninguna.
+      await request(server())
+        .post(`/employees/${ana}/time-off`)
+        .set(...auth(tenant.accessToken))
+        .send({
+          kind: 'VACATION',
+          startsAt: '2026-02-10T00:00:00Z',
+          endsAt: '2026-02-20T00:00:00Z',
+        })
+        .expect(201);
+    });
+
+    interface TeamRow {
+      employeeId: string;
+      employeeName: string;
+      isActive: boolean;
+      shifts: { branchId: string; dayOfWeek: number }[];
+      timeOff: { branchId: string | null; kind: string }[];
+    }
+
+    const find = (rows: TeamRow[], id: string): TeamRow => {
+      const row = rows.find((candidate) => candidate.employeeId === id);
+
+      if (!row) {
+        throw new Error(`El equipo no trae al empleado ${id}`);
+      }
+
+      return row;
+    };
+
+    it('trae a todo el equipo con su horario y sus ausencias en un pedido', async () => {
+      const response = await equipo().expect(200);
+      const rows = response.body as TeamRow[];
+
+      // El dueño también es del equipo.
+      expect(rows).toHaveLength(3);
+
+      const deAna = find(rows, ana);
+      expect(deAna).toMatchObject({
+        employeeName: 'Ana Gómez',
+        isActive: true,
+      });
+      expect(deAna.shifts).toHaveLength(2);
+      expect(deAna.timeOff).toEqual([
+        expect.objectContaining({ kind: 'VACATION', branchId: null }),
+      ]);
+
+      const deBruno = find(rows, bruno);
+      expect(deBruno.shifts).toHaveLength(1);
+      expect(deBruno.timeOff).toEqual([]);
+    });
+
+    /**
+     * El test que importa de este endpoint.
+     *
+     * Una ausencia sin sucursal significa "en ninguna", así que también afecta
+     * a la que se está filtrando. Si el filtro por sucursal la dejara afuera,
+     * la grilla de Centro mostraría a Ana atendiendo justo la semana que está
+     * en Brasil — que es peor que no tener el endpoint.
+     */
+    it('filtrando por sucursal, la ausencia sin sucursal entra igual', async () => {
+      // Además, una ausencia que SÍ es solo de Palermo: esa no tiene que venir.
+      await request(server())
+        .post(`/employees/${ana}/time-off`)
+        .set(...auth(tenant.accessToken))
+        .send({
+          branchId: palermo,
+          kind: 'LEAVE',
+          startsAt: '2026-02-05T00:00:00Z',
+          endsAt: '2026-02-06T00:00:00Z',
+        })
+        .expect(201);
+
+      const response = await request(server())
+        .get(`/employees/schedules?${FEBRERO}&branchId=${centro}`)
+        .set(...auth(tenant.accessToken))
+        .expect(200);
+
+      const deAna = find(response.body as TeamRow[], ana);
+
+      expect(deAna.shifts).toEqual([
+        expect.objectContaining({ branchId: centro }),
+      ]);
+      expect(deAna.timeOff).toEqual([
+        expect.objectContaining({ kind: 'VACATION', branchId: null }),
+      ]);
+    });
+
+    it('no trae las ausencias que no tocan el rango', async () => {
+      const response = await request(server())
+        .get(
+          '/employees/schedules?from=2026-06-01T00:00:00Z&to=2026-06-30T00:00:00Z',
+        )
+        .set(...auth(tenant.accessToken))
+        .expect(200);
+
+      expect(find(response.body as TeamRow[], ana).timeOff).toEqual([]);
+      // El horario semanal no depende del rango: ese sigue viniendo.
+      expect(find(response.body as TeamRow[], ana).shifts).toHaveLength(2);
+    });
+
+    it('filtra por estado igual que el listado de empleados', async () => {
+      await request(server())
+        .patch(`/employees/${bruno}`)
+        .set(...auth(tenant.accessToken))
+        .send({ isActive: false })
+        .expect(200);
+
+      const response = await request(server())
+        .get(`/employees/schedules?${FEBRERO}&isActive=true`)
+        .set(...auth(tenant.accessToken))
+        .expect(200);
+
+      const ids = (response.body as TeamRow[]).map((row) => row.employeeId);
+      expect(ids).not.toContain(bruno);
+      expect(ids).toContain(ana);
+    });
+
+    it('exige el rango', async () => {
+      await request(server())
+        .get('/employees/schedules')
+        .set(...auth(tenant.accessToken))
+        .expect(400);
+    });
+
+    it('rechaza un rango invertido', async () => {
+      await request(server())
+        .get(
+          '/employees/schedules?from=2026-02-28T00:00:00Z&to=2026-02-01T00:00:00Z',
+        )
+        .set(...auth(tenant.accessToken))
+        .expect(400);
+    });
+
+    /** Sin tope, la respuesta crece sin techo y nadie la mira entera. */
+    it('rechaza un rango de más de 92 días', async () => {
+      await request(server())
+        .get(
+          '/employees/schedules?from=2026-01-01T00:00:00Z&to=2026-06-01T00:00:00Z',
+        )
+        .set(...auth(tenant.accessToken))
+        .expect(400);
+    });
+
+    /** Un id mal escrito devolviendo `[]` parece un negocio sin empleados. */
+    it('una sucursal ajena es un error, no un equipo vacío', async () => {
+      await request(server())
+        .get(`/employees/schedules?${FEBRERO}&branchId=${randomUUID()}`)
+        .set(...auth(tenant.accessToken))
+        .expect(400);
+    });
+
+    /** Misma información que `GET /employees/:id/schedules`, que tampoco pide rol. */
+    it('un PROFESSIONAL puede verlo', async () => {
+      const invitation = await invite({ email: 'pro@e2e.test' });
+      const token = tokenFromUrl(invitation.activationUrl);
+
+      await request(server())
+        .post('/employees/activate')
+        .send({ token, password: TEST_PASSWORD })
+        .expect(204);
+
+      const login = await request(server())
+        .post('/auth/login')
+        .send({ email: 'pro@e2e.test', password: TEST_PASSWORD })
+        .expect(200);
+
+      await equipo((login.body as { accessToken: string }).accessToken).expect(
+        200,
+      );
+    });
+  });
+
   describe('Autorización por rol', () => {
     let employeeId: string;
 

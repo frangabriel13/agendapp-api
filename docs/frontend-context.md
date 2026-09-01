@@ -280,14 +280,14 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 
 ## Qué existe hoy y qué no
 
-**Disponible — 87 endpoints:**
+**Disponible — 89 endpoints:**
 
 | Área | Endpoints | Alcanza para |
 |---|---|---|
 | `/auth` | 10 | Toda la capa de sesión: registro, login, refresh, logout, perfil, cambio de contraseña, **recuperar la contraseña olvidada y confirmar el email** |
 | `/tenants` | 6 | Configuración del negocio, branding (colores y logo), preferencias |
 | `/branches` | 11 | CRUD de sucursales, horario semanal, feriados y días especiales |
-| `/employees` | 13 | CRUD, invitación con link, activación pública, permisos, asignación a sucursales, horario con turno partido, ausencias **con tipo** |
+| `/employees` | 14 | CRUD, invitación con link, activación pública, permisos, asignación a sucursales, horario con turno partido, ausencias **con tipo**, y **el horario + las ausencias de todo el equipo en un pedido** |
 | `/service-categories` | 5 | CRUD de categorías del catálogo |
 | `/services` | 9 | CRUD de servicios, quién los presta y dónde, qué recursos requieren |
 | `/resources` | 5 | CRUD de camillas, salas y sillones por sucursal |
@@ -295,7 +295,7 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 | `/customer-tags` | 5 | CRUD de etiquetas ("VIP", "Debe seña") |
 | `/appointments` | 8 | Disponibilidad, agendar, agenda por rango, estados, reprogramar, series |
 | `/appointments/:id/payments` | 3 | Saldo del turno, link de pago online, pagos en efectivo y devoluciones |
-| `/payments` | 1 | **Lo cobrado en un rango de fechas, con totales.** Es lo que necesita `/reportes` |
+| `/payments` | 2 | **Lo cobrado en un rango de fechas y lo que falta cobrar de ese rango**, los dos con totales. Es lo que necesita `/reportes` |
 | `/tenants/me/subscription` | 2 | Estado de la suscripción del negocio y el link para pagar el mes |
 | `/webhooks` | 1 | Aviso de pago de Mercado Pago. **No lo llama el front** |
 | `/health` | 1 | Healthcheck |
@@ -630,6 +630,42 @@ momentos.
 Solo trae cobros de turnos. Los de la suscripción del negocio son otra tabla y
 están en `GET /tenants/me/subscription`.
 
+#### Lo que falta cobrar — `GET /payments/receivables`
+
+La otra mitad del reporte, y **filtra por otra fecha**: por la del **turno**, no
+por la de un cobro. Una deuda no tiene fecha propia —si tuviera fecha de
+acreditación ya no sería una deuda—, así que la única que existe es la del turno
+que la generó. Por eso no alcanzaba con `status=PENDING` en el otro endpoint:
+ese pendiente no está en ningún rango.
+
+`?from=2026-09-01&to=2026-09-30` — mismos días del calendario del negocio que el
+otro (un turno de las 23:00 del 30 entra en septiembre). Filtros opcionales:
+`branchId` y `employeeId`.
+
+Responde `{ data, meta, totals }`:
+
+| Campo de `totals` | Qué es |
+|---|---|
+| `appointments` | Cuántos turnos deben algo |
+| `totalPriceCents` | Lo que valen esos turnos, entero |
+| `paidCents` | Lo que ya entró de esos turnos |
+| `dueCents` | **Lo que falta cobrar.** Es el número del reporte |
+
+Cada fila trae el turno con cliente, teléfono, profesional, sucursal y horario,
+más `totalPriceCents`, `paidCents`, `refundedCents`, `dueCents` y si la seña
+está cubierta — lo suficiente para armar una lista de reclamo sin pedir cada
+turno aparte. Vienen **de la más vieja a la más nueva**: lo que se debe hace más
+tiempo primero.
+
+Cuatro cosas que conviene tener claras:
+
+- **Solo aparecen los turnos que deben algo.** Los que están al día no están en la lista, así que **`meta.total` cuenta turnos con deuda, no turnos del rango**.
+- **Quedan afuera los cancelados y los reprogramados.** Un turno que no pasó no genera deuda; en el reprogramado la deuda se mudó al turno nuevo y contar los dos la duplicaría. Sí deben los `NO_SHOW`: la persona no vino, pero el turno existió.
+- **Si el negocio cobra multa por cancelar, eso se registra como cobro** y sale por `GET /payments`, no por acá.
+- **El rango no puede pasar de 92 días** (el otro endpoint no tiene tope porque pagina en la base; acá el saldo se calcula turno por turno). Más que eso es 400.
+
+⚠️ **Pide `OWNER` o `ADMINISTRATIVE`**, igual que `GET /payments`.
+
 ### Detalle sobre la suscripción del negocio (Fase 6)
 
 Es la cuenta que el negocio le paga a AgendApp, distinta de lo que le cobra a su
@@ -674,6 +710,42 @@ en `true`, alcanza con decir "le mandamos un mail a ana@…".
 
 `POST /employees/activate` es público y es donde el empleado define su contraseña.
 La pantalla que lo recibe es `/activar?token=…`.
+
+### El horario de todo el equipo en un pedido
+
+`GET /employees/schedules?from=&to=` devuelve, por empleado, su **horario
+semanal** y sus **ausencias**. Reemplaza a las N llamadas a
+`GET /employees/:id/schedules` + `GET /employees/:id/time-off`: el costo ya no
+depende del tamaño del equipo.
+
+```
+[
+  {
+    "employeeId": "…",
+    "employeeName": "Ana Gómez",
+    "isActive": true,
+    "shifts":  [ { "id": "…", "branchId": "…", "dayOfWeek": 1, "startsAt": "09:00", "endsAt": "13:00" } ],
+    "timeOff": [ { "id": "…", "branchId": null, "kind": "VACATION", "startsAt": "…", "endsAt": "…", "reason": "…" } ]
+  }
+]
+```
+
+Cinco cosas que conviene tener claras:
+
+- **`from` y `to` son obligatorios** y acotan solo las **ausencias**. El horario semanal es una plantilla por día de la semana y no depende del rango: viene siempre.
+- **El rango no puede pasar de 92 días.** Más que eso es 400. Una grilla siempre sabe qué semana o qué mes está mirando.
+- **Las ausencias que *tocan* el rango**, no solo las que caen enteras adentro: unas vacaciones de enero a marzo aparecen al mirar febrero.
+- **Con `branchId` vienen solo los tramos de esa sucursal, pero las ausencias sin sucursal entran igual.** Una ausencia con `branchId: null` es "en ninguna", así que también afecta a la que estás filtrando. Filtrarlas afuera mostraría a alguien atendiendo justo la semana que no está.
+- **Un `branchId` que no es de tu negocio es 400**, no una lista vacía.
+
+Las filas vienen en el mismo orden que `GET /employees` —el dueño primero,
+después por apellido—, así que las dos pantallas se pueden alinear sin ordenar
+de nuevo.
+
+**No es la disponibilidad real.** Esto es lo que la persona declaró y lo que lo
+interrumpe. Los turnos ya tomados, los recursos ocupados y el horario de la
+sucursal los descuenta `GET /appointments/availability`, que es otro endpoint y
+otra pregunta.
 
 ### Detalle sobre las ausencias
 

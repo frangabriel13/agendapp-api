@@ -10,6 +10,11 @@ import {
 } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import {
+  MAX_RECEIVABLES_RANGE_DAYS,
+  PaymentReceivablesQueryDto,
+  PaymentReceivablesResponseDto,
+} from './dto/payment-receivables.dto';
+import {
   PaymentRangeQueryDto,
   PaymentRangeResponseDto,
 } from './dto/payment-range.dto';
@@ -69,5 +74,35 @@ export class PaymentReportsController {
     @Query() query: PaymentRangeQueryDto,
   ): Promise<PaymentRangeResponseDto> {
     return this.payments.findByRange(query);
+  }
+
+  @Get('receivables')
+  @ApiOperation({
+    summary: 'Lo que falta cobrar de un rango, con los totales del rango',
+    description:
+      'La otra mitad de `GET /payments`, y **filtra por otra fecha**: por la ' +
+      'del **turno**, no por la de un cobro. Una deuda no tiene fecha propia ' +
+      '—si tuviera fecha de acreditación ya no sería una deuda—, así que la ' +
+      'única fecha que existe es la del turno que la generó.\n\n' +
+      'Trae **solo los turnos que deben algo**: los que están al día no ' +
+      'aparecen, y por eso `meta.total` cuenta turnos con deuda y no turnos ' +
+      'del rango.\n\n' +
+      'Quedan afuera los cancelados y los reprogramados: un turno que no pasó ' +
+      'no genera deuda, y en el reprogramado la deuda se mudó al turno nuevo ' +
+      '—contar los dos la duplicaría—. Si el negocio cobra multa por cancelar, ' +
+      'eso se registra como cobro y sale por el otro endpoint.\n\n' +
+      `El rango no puede pasar de ${MAX_RECEIVABLES_RANGE_DAYS} días.`,
+  })
+  @ApiOkResponse({ type: PaymentReceivablesResponseDto })
+  @ApiBadRequestResponse({
+    description: 'Fechas mal formadas, rango invertido o demasiado largo.',
+  })
+  @ApiForbiddenResponse({
+    description: 'Un `PROFESSIONAL` no ve la plata del negocio.',
+  })
+  findReceivables(
+    @Query() query: PaymentReceivablesQueryDto,
+  ): Promise<PaymentReceivablesResponseDto> {
+    return this.payments.findReceivables(query);
   }
 }

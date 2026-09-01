@@ -10,7 +10,7 @@
 
 > **Fases 0 a 6 cerradas, más los mails transaccionales.** El corazón del sistema está: turnos, disponibilidad, recurrencia, y ahora cobros —señas de turnos y la suscripción del negocio—. Los mails se adelantaron (estaban diferidos con deadline "antes de la Fase 7") porque su única deuda real —no poder recuperar una contraseña sin entrar a la base a mano— no convenía arrastrarla más.
 >
-> **Antes de la Fase 7 va una tanda de deuda chica pedida por el front (2026-09-01).** El front cerró su roadmap y quedaron cuatro cosas del backend: el tipo de ausencia, un endpoint que traiga horarios y ausencias de todo el equipo juntos, poder ver lo que **falta** cobrar de un mes y el choque de ids del sandbox. Cada uno queda anotado en la fase donde vive. Se hacen primero porque es deuda concreta contra deuda hipotética: el portal público todavía no tiene a nadie esperándolo. Después sí, la Fase 7.
+> **Antes de la Fase 7 se cerró una tanda de deuda chica pedida por el front (2026-09-01).** El front cerró su roadmap y quedaron cuatro cosas del backend, las cuatro hechas: el tipo de ausencia (§2.3), el horario y las ausencias de todo el equipo en un pedido (§2.4), lo que **falta** cobrar de un mes (§6.6) y el choque de ids del sandbox (§6.7). Fueron primero porque es deuda concreta contra deuda hipotética: el portal público todavía no tiene a nadie esperándolo. **Ahora sí, lo que sigue es la Fase 7.**
 >
 > **El front terminó el 2026-09-01**: cerró su roadmap en 21 puntos con 83 de los 87 endpoints cableados y sin nada de mock. Los 4 que faltan son los que no corresponde llamar — `/health`, el webhook de Mercado Pago y `/auth/refresh`, que vive adentro de su `lib/api.ts`. Todas las formas de contrato que venían sin ejercitar —paginación `{ data, meta }`, errores con campos extra, el `balance` de pagos, el 402 de la suscripción— ya pasaron por pantallas reales. **Desde acá, lo que traba al front lo destraba el backend.**
 >
@@ -463,6 +463,21 @@ Un archivo entero del front (`absenceKind.ts`) existía solo para eso.
 - **`reason` no se toca.** Sigue siendo la nota humana; `kind` es la parte que la máquina lee. La tentación era derivar uno del otro y es exactamente el bug que se está arreglando.
 - **Tests**: 3 e2e nuevos (guarda el tipo, sin tipo queda `OTHER`, un tipo inventado es 400), verificado mutando el arreglo — sacando el paso de `kind` al `create`, el primero falla con `"kind": "OTHER"` donde esperaba `"VACATION"`.
 
+### ✅ 2.4 El horario del equipo en un pedido — pedido del front (2026-09-01)
+
+La grilla semanal del panel armaba **una llamada por empleado** para el horario
+y otra para las ausencias. Ya no reventaban el rate limiting, pero seguían
+siendo N.
+
+- `GET /employees/schedules?from=&to=&branchId=&isActive=` — por empleado, su horario semanal y sus ausencias. **Tres consultas en total**, no dependen del tamaño del equipo.
+- **Va declarado ANTES que `@Get(':id')`.** Si no, `schedules` entra como `:id` y el `ParseUUIDPipe` lo rechaza con un 400 que no explica nada. Mismo motivo que `activate`.
+- **Horario y ausencias viajan juntos porque separados mienten.** Un horario sin las ausencias muestra a alguien atendiendo el martes que se fue de vacaciones, y quien los pida por separado tiene que acordarse de cruzarlos siempre. Es una vista, no dos recursos.
+- **Sin `@Roles`**, al revés que el reporte de cobros: es exactamente la misma información que `GET /employees/:id/schedules` —que tampoco lo lleva— en un solo pedido. Poner rol acá lo agregaría por la puerta de atrás a un dato que ya es visible.
+- **`from`/`to` obligatorios y tope de 92 días.** Acotan solo las ausencias (el horario semanal es una plantilla y no depende del rango). Sin tope la respuesta crece sin techo, y una grilla siempre sabe qué semana está mirando.
+- **Con `branchId`, las ausencias sin sucursal entran igual.** `branchId: null` significa "en ninguna", así que también afecta a la que se filtra. Es el test que importa del tramo, y está verificado mutando: sacando el `{ branchId: null }` del `OR`, la ausencia desaparece y el test falla.
+- **Una sucursal ajena es 400, no un equipo vacío.** Un id mal escrito devolviendo `[]` parece un negocio sin empleados.
+- **Tests**: 9 e2e nuevos.
+
 ---
 
 ## ✂️ FASE 3 — Catálogo (Servicios y Recursos)
@@ -795,6 +810,38 @@ tabla—. Se extrajo `paymentTotals` de `payment-balance.ts`: la regla de qué f
 suma y qué fila resta, sin el turno alrededor. Los totales del rango salen de un
 `groupBy` en la base y **cada grupo entra a esa misma función** como si fuera un
 pago solo por su suma.
+
+### ✅ 6.6 Lo que falta cobrar — pedido del front (2026-09-01)
+
+`GET /payments` filtra por `paidAt` y **un pendiente no tiene fecha de
+acreditación**: no puede caer en ningún rango. La deuda del mes era invisible
+salvo mirando turno por turno, que es justamente lo que el otro endpoint vino a
+evitar.
+
+- `GET /payments/receivables?from=&to=&branchId=&employeeId=` — paginado `{ data, meta, totals }`, en el mismo controller y con los mismos roles que `GET /payments`.
+- **Es un reporte de turnos, no de pagos, y esa es toda la idea.** La fecha de una deuda es la del turno: la única que existe. Un turno de septiembre cobrado en octubre debe en septiembre. Hay un e2e que lo fija en las dos direcciones.
+- **El saldo sale de `appointmentBalance`, fila por fila.** No hay `WHERE due > 0` posible —`dueCents` no es una columna, es `max(0, total - pagado)`— y empujarlo a SQL habría obligado a escribir por segunda vez la regla de qué pago suma y cuál resta. El precio, asumido y anotado: el rango entero pasa por memoria antes del recorte, de ahí el tope de 92 días, y `meta.total` cuenta turnos con deuda y no turnos del rango.
+- **`OWING_APPOINTMENT_STATUSES` es una constante propia y NO reusa `BLOCKING_STATUSES`** de `availability.ts`, aunque hoy tengan los mismos miembros. Ocupar un hueco en la agenda y deber plata son preguntas distintas: compartir la constante haría que una de las dos respuestas cambie sola el día que aparezca un estado nuevo.
+- **Afuera los cancelados y `RESCHEDULED`**: en el reprogramado la deuda se mudó al turno nuevo, y contar los dos la duplica — un error que no se ve mirando una fila, solo mirando el total. Verificado mutando: agregando `RESCHEDULED` a la lista, el test falla con 2 donde esperaba 1.
+- **Días del calendario del negocio**, igual que el otro. También verificado mutando: armando el rango en UTC, el turno de las 23:00 del 30 desaparece de septiembre.
+- **Tests**: 16 e2e nuevos.
+
+### ✅ 6.7 El choque de ids del sandbox (2026-09-01)
+
+En dev no se podía confirmar el pago de la suscripción, y el aviso contestaba
+`applied` como si todo hubiera salido bien.
+
+El contador del `SandboxPaymentProvider` vive **en memoria** y `mpPaymentId`
+vive **en la base**: al reiniciar el server el contador volvía a 1 y el id
+"nuevo" ya era de una fila vieja. `handleWebhook` busca primero entre los pagos
+de turnos y recién después entre los de suscripción, así que el aviso le
+acertaba al pago de turno del arranque anterior.
+
+Los ids llevan ahora un prefijo por corrida, que rota también en `reset()`. Un
+link de antes del reinicio falla fuerte —"no conozco ese pago"— en vez de
+escribir en la fila equivocada, que es lo que hacía este bug difícil de ver.
+Verificado mutando: sin el prefijo, el test falla con `Expected: not
+"sandbox-payment-1"`.
 
 ---
 

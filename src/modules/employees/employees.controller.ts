@@ -40,6 +40,10 @@ import {
   TimeOffResponseDto,
 } from './dto/employee-time-off.dto';
 import {
+  TeamMemberScheduleDto,
+  TeamScheduleQueryDto,
+} from './dto/team-schedule.dto';
+import {
   ActivateEmployeeDto,
   EmployeeDetailResponseDto,
   EmployeeInvitationResponseDto,
@@ -111,6 +115,38 @@ export class EmployeesController {
     @Query() query: ListEmployeesQueryDto,
   ): Promise<EmployeeResponseDto[]> {
     return this.employeesService.findAll(query);
+  }
+
+  /**
+   * Va declarado ANTES que `@Get(':id')`, si no `schedules` entra como `:id` y
+   * el `ParseUUIDPipe` lo rechaza con un 400 que no dice nada. Mismo motivo que
+   * `activate` arriba.
+   */
+  @Get('schedules')
+  @ApiOperation({
+    summary: 'Horario y ausencias de todo el equipo, en un pedido',
+    description:
+      'Existe para que la grilla del panel no arme una llamada por empleado. ' +
+      'El horario semanal **no** depende del rango —es una plantilla por día ' +
+      'de la semana—; `from`/`to` acotan las **ausencias**, y traen las que ' +
+      'tocan el rango, no solo las que caen enteras adentro.\n\n' +
+      'Con `branchId` vienen solo los tramos de esa sucursal, pero las ' +
+      'ausencias **sin** sucursal entran igual: no estar en ninguna incluye a ' +
+      'esta.\n\n' +
+      '**No es la disponibilidad real.** Esto es lo que la persona declaró y ' +
+      'lo que lo interrumpe; los turnos ya tomados, los recursos ocupados y el ' +
+      'horario de la sucursal los descuenta `GET /appointments/availability`.',
+  })
+  @ApiOkResponse({ type: [TeamMemberScheduleDto] })
+  @ApiBadRequestResponse({
+    description:
+      'Fechas mal formadas, rango invertido, de más de 92 días, o una ' +
+      'sucursal que no es de tu negocio.',
+  })
+  findTeamSchedules(
+    @Query() query: TeamScheduleQueryDto,
+  ): Promise<TeamMemberScheduleDto[]> {
+    return this.employeesService.findTeamSchedules(query);
   }
 
   @Get(':id')

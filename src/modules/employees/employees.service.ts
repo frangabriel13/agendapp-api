@@ -35,6 +35,11 @@ import type {
   TimeOffResponseDto,
 } from './dto/employee-time-off.dto';
 import {
+  MAX_TEAM_RANGE_DAYS,
+  type TeamMemberScheduleDto,
+  type TeamScheduleQueryDto,
+} from './dto/team-schedule.dto';
+import {
   EmployeeStatus,
   type EmployeeDetailResponseDto,
   type EmployeeInvitationResponseDto,
@@ -68,6 +73,8 @@ const EMPLOYEE_SELECT = {
     },
   },
 } satisfies Prisma.EmployeeSelect;
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const SHIFT_SELECT = {
   id: true,
@@ -461,6 +468,117 @@ export class EmployeesService {
     return this.loadSchedules(id);
   }
 
+  /**
+   * El horario y las ausencias de **todo el equipo** en tres consultas.
+   *
+   * Existe porque la grilla del panel armaba una llamada por empleado: con
+   * quince personas eran treinta pedidos para pintar una semana. Acá el costo
+   * no depende del tamaño del equipo.
+   *
+   * **Los dos viajan juntos porque separados mienten.** Un horario sin las
+   * ausencias muestra a alguien atendiendo el martes que se fue de vacaciones,
+   * y quien las pida por separado tiene que acordarse de cruzarlas siempre.
+   *
+   * No lleva `@Roles`: es exactamente la misma información que
+   * `GET /employees/:id/schedules`, que tampoco lo lleva, en un solo pedido.
+   */
+  async findTeamSchedules(
+    query: TeamScheduleQueryDto,
+  ): Promise<TeamMemberScheduleDto[]> {
+    const from = new Date(query.from);
+    const to = new Date(query.to);
+
+    if (to.getTime() <= from.getTime()) {
+      throw new BadRequestException(
+        'El rango tiene que terminar después de empezar',
+      );
+    }
+
+    if (to.getTime() - from.getTime() > MAX_TEAM_RANGE_DAYS * MS_PER_DAY) {
+      throw new BadRequestException(
+        `El rango no puede pasar de ${MAX_TEAM_RANGE_DAYS} días`,
+      );
+    }
+
+    // Una sucursal que no existe es un error de quien llama, no un equipo
+    // vacío: sin esto, un id mal escrito devuelve `[]` y parece un negocio sin
+    // empleados.
+    if (query.branchId !== undefined) {
+      await this.assertBranchesExist([query.branchId]);
+    }
+
+    const employees = await this.prisma.scoped.employee.findMany({
+      where: {
+        ...(query.isActive === undefined ? {} : { isActive: query.isActive }),
+        ...(query.branchId === undefined
+          ? {}
+          : { branches: { some: { branchId: query.branchId } } }),
+      },
+      select: {
+        id: true,
+        isActive: true,
+        user: { select: { firstName: true, lastName: true } },
+      },
+      // El mismo orden que `GET /employees`, para que las filas de la grilla
+      // caigan donde el front ya las espera.
+      orderBy: [
+        { isOwner: 'desc' },
+        { user: { lastName: 'asc' } },
+        { user: { firstName: 'asc' } },
+      ],
+    });
+
+    if (employees.length === 0) {
+      return [];
+    }
+
+    const employeeIds = employees.map((employee) => employee.id);
+
+    const [shifts, timeOff] = await Promise.all([
+      this.prisma.scoped.employeeSchedule.findMany({
+        where: {
+          employeeId: { in: employeeIds },
+          ...(query.branchId === undefined ? {} : { branchId: query.branchId }),
+        },
+        select: { ...SHIFT_SELECT, employeeId: true },
+        orderBy: [{ dayOfWeek: 'asc' }, { startsAt: 'asc' }],
+      }),
+      this.prisma.scoped.employeeTimeOff.findMany({
+        where: {
+          employeeId: { in: employeeIds },
+          // "Las que tocan el rango", no "las que caen adentro".
+          startsAt: { lte: to },
+          endsAt: { gte: from },
+          // Una ausencia sin sucursal es "en ninguna", así que también afecta
+          // a la que se está filtrando. Dejarla afuera mostraría a alguien
+          // disponible justo el día que no está.
+          ...(query.branchId === undefined
+            ? {}
+            : { OR: [{ branchId: query.branchId }, { branchId: null }] }),
+        },
+        select: TIME_OFF_SELECT,
+        orderBy: { startsAt: 'asc' },
+      }),
+    ]);
+
+    const shiftsBy = groupBy(shifts, (row) => row.employeeId);
+    const timeOffBy = groupBy(timeOff, (row) => row.employeeId);
+
+    return employees.map((employee) => ({
+      employeeId: employee.id,
+      employeeName: `${employee.user.firstName} ${employee.user.lastName}`,
+      isActive: employee.isActive,
+      shifts: (shiftsBy.get(employee.id) ?? []).map((row) => ({
+        id: row.id,
+        branchId: row.branchId,
+        dayOfWeek: row.dayOfWeek,
+        startsAt: dateToTimeOfDay(row.startsAt),
+        endsAt: dateToTimeOfDay(row.endsAt),
+      })),
+      timeOff: timeOffBy.get(employee.id) ?? [],
+    }));
+  }
+
   async findTimeOff(
     id: string,
     query: ListTimeOffQueryDto,
@@ -765,6 +883,27 @@ function toEmployeeResponse(row: EmployeeRow): EmployeeResponseDto {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+/** Junta filas por empleado, para no volver a la base una vez por persona. */
+function groupBy<T>(
+  rows: readonly T[],
+  key: (row: T) => string,
+): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+
+  for (const row of rows) {
+    const id = key(row);
+    const current = groups.get(id);
+
+    if (current) {
+      current.push(row);
+    } else {
+      groups.set(id, [row]);
+    }
+  }
+
+  return groups;
 }
 
 /** Deja solo las claves que el PATCH mandó (`undefined` = "no tocar"). */
