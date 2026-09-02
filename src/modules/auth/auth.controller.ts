@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
+import { Audited, AuditAction, AuditEntity } from '../../common/audit';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -58,6 +59,13 @@ export class AuthController {
   }
 
   @Post('login')
+  @Audited({
+    action: AuditAction.LOGIN,
+    entityType: AuditEntity.SESSION,
+    // El único lugar donde el fracaso ES el evento: quién intentó entrar a una
+    // cuenta, cuántas veces y desde dónde.
+    alsoOnFailure: true,
+  })
   @Public()
   @HttpCode(HttpStatus.OK)
   @Throttle(CREDENTIALS_THROTTLE)
@@ -123,6 +131,9 @@ export class AuthController {
   }
 
   @Post('reset-password')
+  // Sin sesión todavía, así que `userId` queda en `null`. Lo que vale acá es
+  // el cuándo y el desde dónde: una toma de cuenta se investiga por ahí.
+  @Audited({ action: AuditAction.UPDATED, entityType: AuditEntity.USER })
   @Public()
   @HttpCode(HttpStatus.NO_CONTENT)
   @Throttle(CREDENTIALS_THROTTLE)
@@ -164,6 +175,7 @@ export class AuthController {
   }
 
   @Patch('password')
+  @Audited({ action: AuditAction.UPDATED, entityType: AuditEntity.USER })
   @ApiBearerAuth()
   @HttpCode(HttpStatus.NO_CONTENT)
   @Throttle(CREDENTIALS_THROTTLE)

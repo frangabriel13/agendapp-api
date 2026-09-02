@@ -12,6 +12,7 @@ import {
   Put,
   Query,
 } from '@nestjs/common';
+import { Audited, AuditAction, AuditEntity } from '../../common/audit';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -73,6 +74,10 @@ export class EmployeesController {
    * invitación, no el JWT.
    */
   @Post('activate')
+  @Audited({
+    action: AuditAction.ACTIVATED,
+    entityType: AuditEntity.EMPLOYEE,
+  })
   @Public()
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
@@ -90,6 +95,12 @@ export class EmployeesController {
   }
 
   @Post()
+  @Audited({
+    action: AuditAction.CREATED,
+    entityType: AuditEntity.EMPLOYEE,
+    // La respuesta trae el link de activación al lado, no la entidad pelada.
+    entityIdFrom: 'employee.id',
+  })
   @Roles(...MANAGERS)
   @ApiOperation({
     summary: 'Invita a un empleado',
@@ -160,6 +171,9 @@ export class EmployeesController {
   }
 
   @Patch(':id')
+  // Acá es donde cambia un rol, que es de las cosas que más se discuten
+  // después. El `changes` guarda con qué se pidió.
+  @Audited({ action: AuditAction.UPDATED, entityType: AuditEntity.EMPLOYEE })
   @Roles(...MANAGERS)
   @ApiOperation({
     summary: 'Edita el vínculo del empleado con el negocio',
@@ -180,6 +194,7 @@ export class EmployeesController {
   }
 
   @Delete(':id')
+  @Audited({ action: AuditAction.DELETED, entityType: AuditEntity.EMPLOYEE })
   @Roles(...MANAGERS)
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({

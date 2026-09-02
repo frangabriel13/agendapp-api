@@ -7,7 +7,7 @@ import {
   type NestModule,
 } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { APP_FILTER, APP_GUARD, APP_PIPE } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
@@ -15,6 +15,7 @@ import {
   TenantContextMiddleware,
   TenantContextModule,
 } from './common/tenant-context';
+import { AuditInterceptor, AuditModule } from './common/audit';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { ActiveSubscriptionGuard } from './common/guards/active-subscription.guard';
 import { PublicTenantGuard } from './common/guards/public-tenant.guard';
@@ -85,6 +86,7 @@ import type { Env } from './config/env.schema';
     TenantContextModule,
     PrismaModule,
     MailModule,
+    AuditModule,
     AuthModule,
     HealthModule,
     TenantsModule,
@@ -133,6 +135,10 @@ import type { Env } from './config/env.schema';
     // por rol. No hace nada salvo que el handler declare
     // `@RequiresActiveSubscription()`.
     { provide: APP_GUARD, useClass: ActiveSubscriptionGuard },
+    // Auditoría. Va como interceptor y no como guard porque necesita ver el
+    // resultado del handler: en un alta, el id de la entidad recién existe
+    // ahí. No hace nada salvo que el handler declare `@Audited(...)`.
+    { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
   ],
 })
 export class AppModule implements NestModule {

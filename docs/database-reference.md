@@ -762,6 +762,19 @@ Notas polimórficas: pueden ser sobre customer, appointment, employee, branch o 
 ### `audit_logs`
 Log básico desde el día 1.
 
+> **Implementada (Fase 8.2).** Append-only: sin `deleted_at` y sin updates.
+> `action` y `entity_type` son texto y no enums a propósito — una auditoría
+> tiene que poder registrar una acción nueva **el día que se agrega**, y un
+> enum obligaría a una migración en el medio; los valores válidos viven en
+> `AuditAction`/`AuditEntity` (TypeScript). Las FK son `SET NULL` y no
+> `CASCADE`: un registro que desaparece junto con lo que audita no es un
+> registro. Hay un CHECK que rechaza `action` o `entity_type` en blanco, y
+> vive solo en el SQL de la migración.
+>
+> ⚠️ `tenant_id` nullable es lo que obliga a que el modelo esté en
+> `TENANT_EXEMPT_MODELS` — y por lo tanto **el filtro por negocio del lado de
+> la lectura lo escribe `AuditLogsService`, no la extension**.
+
 | Campo | Tipo | Notas |
 |---|---|---|
 | `id` | UUID | PK |

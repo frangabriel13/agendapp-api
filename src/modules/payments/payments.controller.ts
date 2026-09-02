@@ -6,6 +6,7 @@ import {
   ParseUUIDPipe,
   Post,
 } from '@nestjs/common';
+import { Audited, AuditAction, AuditEntity } from '../../common/audit';
 import {
   ApiBadGatewayResponse,
   ApiBearerAuth,
@@ -81,6 +82,14 @@ export class PaymentsController {
   }
 
   @Post('manual')
+  // Plata que ningún sistema externo puede confirmar: el rastro de quién la
+  // cargó es lo único que queda si después alguien la discute.
+  @Audited({
+    action: AuditAction.PAYMENT_RECORDED,
+    entityType: AuditEntity.PAYMENT,
+    // La ruta cuelga de `/appointments/:appointmentId/payments`.
+    entityIdParam: 'appointmentId',
+  })
   @ApiOperation({
     summary: 'Registra un pago en efectivo, transferencia o una devolución',
     description:
