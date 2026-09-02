@@ -10,6 +10,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import type { Env } from '../config/env.schema';
 import { TenantContextService } from '../common/tenant-context';
 import { softDeleteExtension, tenantScopeExtension } from './extensions';
+import { TenantPool } from './tenant-pool';
 
 /**
  * Servicio Prisma con dos clientes:
@@ -45,14 +46,36 @@ export class PrismaService
   // El `!` es seguro: se inicializa en onModuleInit antes de cualquier consumo.
   private extendedClient!: ReturnType<PrismaService['buildScoped']>;
 
+  private readonly tenantContext: TenantContextService;
+
+  /**
+   * El pool que le pasamos al adapter.
+   *
+   * Se guarda para poder cerrarlo: cuando el pool lo crea el llamador, Prisma
+   * **no lo cierra** en `$disconnect()` —y hace bien, no es suyo—, así que sin
+   * esto el proceso queda con conexiones abiertas y los tests no terminan.
+   */
+  private readonly pool: TenantPool;
+
   constructor(
     configService: ConfigService<Env, true>,
-    private readonly tenantContext: TenantContextService,
+    tenantContext: TenantContextService,
   ) {
     const connectionString = configService.get('DATABASE_URL', { infer: true });
-    super({
-      adapter: new PrismaPg({ connectionString }),
-    });
+
+    // El pool es propio para poder ponerle a cada conexión el negocio del
+    // request antes de que salga la consulta: es la mitad de RLS que vive del
+    // lado de la aplicación (ver `tenant-pool.ts`). Se pasa el parámetro y no
+    // `this.tenantContext` porque acá todavía no corrió `super()`.
+    const pool = new TenantPool(
+      { connectionString },
+      () => tenantContext.getTenantId() ?? '',
+    );
+
+    super({ adapter: new PrismaPg(pool) });
+
+    this.pool = pool;
+    this.tenantContext = tenantContext;
   }
 
   get scoped(): ReturnType<PrismaService['buildScoped']> {
@@ -69,6 +92,7 @@ export class PrismaService
 
   async onModuleDestroy(): Promise<void> {
     await this.$disconnect();
+    await this.pool.end();
   }
 
   private buildScoped() {

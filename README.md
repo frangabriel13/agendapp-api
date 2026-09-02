@@ -397,6 +397,49 @@ npm run start:dev
 
 ---
 
+## Aislamiento entre negocios (RLS)
+
+Cada negocio ve solo lo suyo, y eso está defendido **dos veces**:
+
+1. **La extension de Prisma** (`prisma.scoped`) le mete el `tenantId` a cada
+   consulta. Es la defensa de todos los días.
+2. **Row Level Security en Postgres**, para el día que la primera falle: un bug
+   en la extension, o un service que use el cliente base y se olvide del filtro.
+
+La aplicación le cuenta a Postgres de qué negocio es cada consulta con un
+*setting* de sesión (`app.current_tenant`) que pone `TenantPool`
+(`src/prisma/tenant-pool.ts`) en cada checkout de conexión. Sin negocio resuelto
+el setting queda vacío y las políticas dejan pasar — es la misma puerta que
+`runWithoutTenant()` en el código: login, webhooks, jobs y seeds.
+
+### ⚠️ RLS no hace nada si la app se conecta con el rol dueño
+
+**Un superusuario ignora RLS, y el dueño de una tabla está exento de sus propias
+políticas.** Con la `DATABASE_URL` de desarrollo (usuario `agendapp`, que es las
+dos cosas), las políticas existen y no cortan nada. Es un fallo mudo: todo anda,
+y el aislamiento que creés tener no está.
+
+Para que corte, la app tiene que conectarse con un rol pelado:
+
+```bash
+# Con DATABASE_URL apuntando al rol dueño:
+RLS_ROLE_PASSWORD='una-contraseña-larga' npm run db:rls-role
+```
+
+El script crea `agendapp_app` sin `SUPERUSER` ni `BYPASSRLS`, le da permisos
+sobre las tablas de hoy y sobre las que traigan las migraciones futuras, e
+imprime la connection string. Después:
+
+- **La app** (`DATABASE_URL`) va con `agendapp_app`.
+- **Las migraciones y los seeds** siguen yendo con el rol dueño: `agendapp_app`
+  no puede hacer DDL a propósito.
+
+En desarrollo local podés dejarlo como está —con el rol dueño— y no perdés nada:
+**los e2e ya corren con un rol restringido**, así que si algo se rompe con RLS
+activo, se rompe en los tests.
+
+---
+
 ## Estado del proyecto
 
 El plan completo está en [`docs/development-roadmap.md`](docs/development-roadmap.md).
@@ -412,16 +455,25 @@ Resumen a hoy:
   (feriados y jornadas con horario distinto).
 - Empleados: invitación con link de activación, permisos por rol, sucursales
   asignadas, horario semanal por sucursal (con turno partido) y ausencias.
-
-- Suite de tests: 193 unitarios + 134 e2e contra Postgres real (flujo completo de
-  registro a edición del negocio, invitación y activación de empleados, rotación
-  de tokens y aislamiento entre negocios).
+- Catálogo: categorías, servicios (con seña y buffer), quién los presta y dónde,
+  y recursos (camillas, salas) con su propio anti-doble-booking.
+- Clientes: ficha identificada por teléfono, búsqueda paginada y etiquetas.
+- Turnos: disponibilidad, alta con EXCLUDE constraint contra el doble-booking,
+  estados, reprogramación y series recurrentes.
+- Pagos: seña y saldo con Mercado Pago (sandbox incluido), pagos en efectivo,
+  devoluciones, lo cobrado y lo que falta cobrar de un rango.
+- Suscripción del negocio: planes, período, corte por falta de pago con gracia.
+- Portal público sin token: ver el negocio, la disponibilidad y **reservar**,
+  con seña obligatoria y liberación automática de lo que nadie paga.
+- Mails transaccionales y recordatorios de turno.
+- Notas internas, auditoría de lo que alguien podría querer negar, y RLS.
+- Suite de tests: ~490 unitarios + ~530 e2e contra Postgres real, corriendo con
+  RLS activo.
 
 **Lo que sigue**
 
-- Fase 3: catálogo de servicios. Fase 4: clientes.
-- Fase 5: turnos y disponibilidad (el corazón). Fase 6: pagos con Mercado Pago.
-- Fase 7: portal público de reservas. Fase 8: auditoría, RLS y jobs con BullMQ.
+- Fase 9 (hardening): CI, pruebas de carga, observabilidad, Helmet y los e2e de
+  rate limiting.
 
 ---
 

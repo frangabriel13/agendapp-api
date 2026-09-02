@@ -943,7 +943,7 @@ Decía "throttling agresivo, ej. 30 req/min por IP". Eso era lo de menos.
 
 ## 📝 FASE 8 — Transversales finales
 
-> **8.1 a 8.4 cerradas el 2026-09-02.** Queda 8.5 (RLS) y 8.6 (CORS). El plan original eran cuatro bullets: notas, auditoría, RLS y BullMQ+Redis.
+> **8.1 a 8.5 cerradas el 2026-09-02.** Queda solo 8.6 (CORS), que es una variable de entorno cuando el portal tenga dominio. El plan original eran cuatro bullets: notas, auditoría, RLS y BullMQ+Redis.
 > Revisado contra el código el 2026-09-02, **dos de los cuatro estaban pedidos al
 > revés**: la cola de Redis resuelve un problema que todavía no tenemos, y el
 > interceptor de auditoría "con diff" no puede cumplir lo que promete desde
@@ -1008,13 +1008,25 @@ Hoy `@nestjs/schedule` corre en **cada instancia** y lo único que lo hace toler
 - **El lock se toma en el cron, no en el service.** Así `releaseAbandoned` sigue devolviendo cuántos soltó y no "cuántos soltó o `null` si otra instancia lo estaba haciendo", y una llamada directa (un test, un script) corre sin pedir permiso — que es lo que uno quiere de una llamada directa. La excepción es el job de recordatorios, cuya sección crítica es solo el reclamo.
 - **Tests**: 3 unitarios de la clave y 4 e2e contra Postgres. El que importa prueba que **de verdad excluye**: si el `pg_try_advisory_xact_lock` no tomara el lock, los dos callbacks entrarían. Verificado mutando.
 
-### 8.5 RLS en Postgres
+### ✅ 8.5 RLS en Postgres (2026-09-02)
 
 La red de seguridad final, y la única parte de esta fase que puede salir mal en silencio.
 
-- Rol de aplicación **sin** `BYPASSRLS` y **distinto del dueño** de las tablas, o `FORCE ROW LEVEL SECURITY` en cada una. Sin esto, las políticas no se aplican y todo "funciona".
-- `SET LOCAL app.current_tenant` **dentro de una transacción por request**, porque con un pool `SET LOCAL` fuera de transacción no dura hasta la query siguiente.
-- **El test es el entregable**: un e2e que desactive la extension de tenant-scope y muestre que la base igual no deja leer al vecino. Si eso no se puede escribir, RLS no está.
+- ✅ **29 políticas** (28 tablas con `tenant_id` más `tenants`, que se filtra por su propio `id`), con `ENABLE` + `FORCE ROW LEVEL SECURITY` y las dos mitades: `USING` para leer y `WITH CHECK` para escribir.
+- ✅ **`TenantPool`** (`src/prisma/tenant-pool.ts`): un `pg.Pool` propio que escribe `app.current_tenant` **en cada checkout de conexión**. Sustituye a la "transacción por request" del plan viejo, que no era viable — ver abajo.
+- ✅ **Los e2e corren con un rol restringido.** Los 532 tests que ya existían pasan con RLS activo, así que cada uno es además una prueba de que el aislamiento de la base no rompe la aplicación.
+- ✅ `npm run db:rls-role` crea el rol de producción; el README explica el cambio de `DATABASE_URL`.
+
+**Lo que el plan escondía, medido:**
+
+- ⚠️ **El rol de la app es superusuario y tiene `BYPASSRLS`.** Con él, la política puesta sobre `branches` dejaba que un negocio viera las sucursales del otro: RLS existía y no cortaba nada. Es el fallo mudo que esta sección venía anunciando, y es de despliegue, no de código.
+- ⚠️ **La "transacción por request" del plan original no era viable.** `POST /public/:slug/appointments` habría sostenido una transacción abierta a través de una llamada a Mercado Pago y dos mails — con los locks del EXCLUDE constraint tomados todo ese rato. Eso convierte el camino más disputado del producto en una cola. Por eso el setting se pone en el checkout de conexión y no en una transacción.
+- ⚠️ **`current_setting(...)::uuid` revienta con el setting vacío.** Postgres no garantiza cortocircuito en un `OR`, así que el `nullif` va también adentro del cast. Sin eso el error sale en **cada** consulta, no al probar la política.
+- ⚠️ **El primer test de contención no probaba nada**: usaba una variable suelta en vez de un `AsyncLocalStorage`, y veinte llamadas concurrentes se pisaban el valor entre ellas.
+- ⚠️ **`create` no sirve para probar `WITH CHECK`**: su `INSERT ... RETURNING` lo filtra el `USING` y falla igual. El test pasaba con `WITH CHECK (true)`. Va `createMany`.
+- ⚠️ **La trampa de la `PrismaPromise` perezosa** (la que `CLAUDE.md` documenta para `runWithoutTenant`) aparece acá con el peor síntoma posible: sin `await` adentro del contexto, la consulta sale con el setting vacío y **los tests de aislamiento pasan**, porque vacío deja ver todo.
+
+**Tests**: 9 e2e propios, más los 532 de siempre corriendo con RLS activo. Verificado mutando cuatro veces: leer el tenant tarde rompe el de contención; apagar RLS en `tenants` rompe 3; debilitar `WITH CHECK` rompe el de escritura cruzada (después de arreglarlo); quitar `FORCE` **no rompe nada**, y eso también está bien — `FORCE` solo importa si algún día la app comparte rol con el dueño de las tablas.
 
 ### 8.6 CORS del portal (deuda de la §7.5)
 
