@@ -280,7 +280,7 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 
 ## Qué existe hoy y qué no
 
-**Disponible — 94 endpoints:**
+**Disponible — 99 endpoints:**
 
 | Área | Endpoints | Alcanza para |
 |---|---|---|
@@ -298,6 +298,7 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 | `/payments` | 2 | **Lo cobrado en un rango de fechas y lo que falta cobrar de ese rango**, los dos con totales. Es lo que necesita `/reportes` |
 | `/tenants/me/subscription` | 2 | Estado de la suscripción del negocio y el link para pagar el mes |
 | `/public/:slug` | 5 | **Portal público, sin token**: el negocio, sus sucursales, sus servicios reservables, la disponibilidad y **reservar** |
+| `/notes` | 5 | **Bitácora interna**: anotar sobre un cliente, un turno, un empleado, una sucursal o el negocio, con autor y privacidad |
 | `/webhooks` | 1 | Aviso de pago de Mercado Pago. **No lo llama el front** |
 | `/health` | 1 | Healthcheck |
 
@@ -764,6 +765,32 @@ Lo que hay que saber para armar la pantalla:
 Cuando la reserva entra salen **dos mails**: la confirmación a quien reservó
 (con el link de pago si falta la seña) y el aviso al negocio. Si el mail falla,
 la reserva igual queda — como en el resto de la API.
+
+### Notas internas (Fase 8)
+
+Una bitácora: varias entradas, cada una con **autor, fecha y privacidad**.
+
+⚠️ **No es `Customer.notes`, y las dos siguen existiendo.** `Customer.notes` es
+el campo de la ficha —uno solo, editable, sin autor— y sigue igual donde está.
+`/notes` es el historial: quién anotó qué y cuándo. Si ya tenés la ficha
+funcionando, no la toques.
+
+`entityType` dice sobre qué es la nota: `CUSTOMER`, `APPOINTMENT`, `EMPLOYEE`,
+`BRANCH` o `GENERAL`. **`GENERAL` es la nota del negocio y va sin `entityId`**;
+los otros cuatro lo exigen, y la API valida que esa entidad exista y sea tuya
+(la nota es polimórfica, así que no hay foreign key que lo garantice).
+
+Para listar las de algo van **los dos filtros juntos**:
+`GET /notes?entityType=CUSTOMER&entityId=…`. Mandar solo el id es 400 — el
+índice es `(negocio, tipo, id)` y sin el tipo la consulta no lo puede usar.
+
+**`isPrivate` no es una etiqueta que haya que respetar en el front.** Una nota
+privada ajena **no viene**: no llega marcada ni recortada, directamente no está
+en la respuesta, y pedirla por id da **404 y no 403** (un 403 confirmaría que
+existe). La ven su autor y el dueño del negocio, nadie más.
+
+Editar y borrar es del autor o del dueño; cualquier otro recibe **403**. Lo que
+no se edita nunca es el destino: una nota que cambia de entidad es otra nota.
 
 ### Detalle sobre la suscripción del negocio (Fase 6)
 

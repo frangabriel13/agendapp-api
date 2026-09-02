@@ -27,6 +27,7 @@ import { BranchesModule } from './modules/branches/branches.module';
 import { CustomerTagsModule } from './modules/customer-tags/customer-tags.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { EmployeesModule } from './modules/employees/employees.module';
+import { NotesModule } from './modules/notes/notes.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { PublicModule } from './modules/public/public.module';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
@@ -95,6 +96,7 @@ import type { Env } from './config/env.schema';
     CustomersModule,
     CustomerTagsModule,
     AppointmentsModule,
+    NotesModule,
     SubscriptionsModule,
     PaymentsModule,
     PublicModule,

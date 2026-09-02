@@ -943,65 +943,68 @@ Decía "throttling agresivo, ej. 30 req/min por IP". Eso era lo de menos.
 
 ## 📝 FASE 8 — Transversales finales
 
-### 8.1 Notas
+> **8.1 cerrada el 2026-09-02.** El plan original eran cuatro bullets: notas, auditoría, RLS y BullMQ+Redis.
+> Revisado contra el código el 2026-09-02, **dos de los cuatro estaban pedidos al
+> revés**: la cola de Redis resuelve un problema que todavía no tenemos, y el
+> interceptor de auditoría "con diff" no puede cumplir lo que promete desde
+> donde está parado.
 
-Migración: `Note` con `entity_type` ENUM + `entity_id` UUID nullable.
+### 8.0 Cinco decisiones
 
-```bash
-npx prisma migrate dev --name notes
-npx nest g resource modules/notes
-```
+1. **¿Redis y BullMQ? → No en esta fase.** Lo único que de verdad pedía una cola era el *scheduler* de recordatorios, y eso lo hace un cron que barre cada 15 minutos — exactamente como `releaseAbandoned`, que ya funciona. La auditoría es **un INSERT**: ponerle Redis adelante "para no bloquear la respuesta" es más infraestructura que problema. Y el lock entre réplicas que pide `CLAUDE.md` lo da un **advisory lock de Postgres**, sin sumar un servicio nuevo al despliegue. Redis cuando haya un número que lo pida, no antes.
+2. **¿Auditoría global o marcada? → Marcada, con `@Audited(...)`.** Un interceptor que loguee todo body mutante escribe **la contraseña de `POST /auth/login`** en la base: eso no es un detalle de tuning, es un bug de seguridad. Y hay algo que el plan viejo daba por hecho y no se puede: **un interceptor no tiene el estado anterior**, así que "diff con `deep-object-diff`" no tiene contra qué diffear. Lo que sí puede registrar, y alcanza, es *quién*, *qué acción*, *sobre qué entidad*, *con qué datos* y *desde dónde*.
+3. **¿RLS de verdad o nada? → De verdad, al final, y con un test que lo pruebe.** Dos cosas que el snippet del plan viejo escondía: **el dueño de la tabla ignora sus propias políticas** salvo `FORCE ROW LEVEL SECURITY`, y **`SET LOCAL` solo vive dentro de una transacción** — con un pool y `prisma.scoped` suelto, cada query saldría sin el setting. Hacerlo bien es un rol de base separado + `FORCE` + una transacción por request. Si no hay un e2e que **rompa la extension a propósito** y muestre que la base igual tapa, es decoración.
+4. **`Customer.notes` vs `Note` → conviven, y no es indecisión.** `Customer.notes` es el campo de la ficha, que el front ya usa. `Note` es una bitácora: varias entradas, con autor, fecha y privacidad. Mover una a la otra rompería el contrato del front sin ganar nada.
+5. **Recordatorios: ¿por qué canal? → mail, y solo a quien dejó mail.** Es el único canal que existe. Pero **el canal se aísla desde el día uno** (igual que `MailProvider`), para que sumar WhatsApp más adelante sea escribir una implementación y no rehacer el flujo.
 
-Endpoints polimórficos:
+### ✅ 8.1 Notas internas (2026-09-02)
 
-- `POST /notes` — body con `{ entityType, entityId?, content, isPrivate }`.
-- `GET /notes?entityType=customer&entityId=...`.
+Migración: `Note` polimórfica, con `entityType` ENUM (`CUSTOMER`, `APPOINTMENT`, `EMPLOYEE`, `BRANCH`, `GENERAL`) y `entityId` UUID nullable.
+
+- **Polimórfica quiere decir sin FK**: la base no puede garantizar que el destino exista ni cascadear su borrado. Se valida al escribir. El costo real es chico porque **acá nada se borra físicamente** (soft delete en todo el dominio), así que una nota no queda apuntando al vacío.
+- **`isPrivate` es una regla de autorización, no un flag decorativo**: la nota privada la ven su autor y el `OWNER`, nadie más. Sin eso, "privada" es una etiqueta que miente.
+- `GENERAL` es el único tipo con `entityId` nulo, y al revés: un tipo con entidad **exige** el id. Un CHECK lo ata en la base para que no dependa de que el DTO esté bien.
+- Endpoints: `POST /notes`, `GET /notes` (paginado), `GET /notes/:id`, `PATCH /notes/:id`, `DELETE /notes/:id`. Editar y borrar, solo el autor o el `OWNER`.
+- **La regla de las dos mitades vive en el service, no en el DTO.** Dos `@ValidateIf` sobre la misma propiedad se pisan entre sí: el primer intento dejaba pasar las dos combinaciones inválidas y el error terminaba saliendo del CHECK de la base como un **500**. Lo encontraron los tests, y el CHECK sigue estando — lo que cambió es que ya no es quien contesta.
+- **Una nota privada ajena responde 404, no 403.** Un 403 confirmaría que existe, que es justo lo que "privada" tiene que esconder. Y el filtro va en el `WHERE`, no al armar la respuesta: filtrar en memoria funciona hasta que alguien agrega un `count` y se olvida de repetir la regla.
+- **Tests**: 20 e2e. Verificado mutando dos veces: dejar el filtro de privacidad en `{}` rompe 2, y sacar el chequeo de autoría al editar rompe otros 2.
 
 ### 8.2 Auditoría
 
-Migración: `AuditLog`.
+Migración: `AuditLog` (ya está en `TENANT_EXEMPT_MODELS` y en `SOFT_DELETE_EXEMPT_MODELS` desde la Fase 1, esperando esto).
 
-Interceptor global `AuditInterceptor` que para cada request mutante (POST/PATCH/PUT/DELETE) registra:
+- **`@Audited({ action, entityType })` + `AuditInterceptor`.** Opt-in, por los dos motivos de la decisión 2.
+- **Lista de campos que nunca se guardan** (`password`, `token`, `secret`, …), aplicada por nombre y en profundidad. Es la segunda defensa: aunque alguien marque `/auth/login`, la contraseña no llega a la base.
+- **Escribe sin bloquear la respuesta y sin voltearla**: si el INSERT falla, va al log y el request sigue. Mismo criterio que los mails — un problema de auditoría no puede convertirse en un problema del usuario.
+- **`tenantId` y `userId` son nullables** a propósito: hay acciones del sistema (un cron, un webhook) que no tienen ninguno de los dos.
+- Qué se marca primero: login, alta/baja de empleados, cambios de rol, cancelaciones de turno y movimientos de plata cargados a mano. Es decir, **lo que alguien podría querer negar después**.
 
-- `action`, `entityType`, `entityId`, `changes` (diff con `deep-object-diff`).
-- `ip_address`, `user_agent` del request.
+### 8.3 Recordatorios de turno
 
-Lo mete en una `Queue` BullMQ para no bloquear la respuesta. Worker consume y persiste.
+- Tabla `AppointmentReminder` con **UNIQUE `(appointment_id, kind)`**: el propio unique es lo que hace idempotente al job, igual que `mp_payment_id` con el webhook. Sin eso, dos réplicas mandan dos mails.
+- Cron cada 15 minutos que busca turnos que arrancan dentro de la ventana de cada recordatorio (24 h y 2 h). Un turno cancelado no entra: se filtra por estado, no hay nada que "desencolar".
+- Solo a quien dejó mail. **Que no haya a dónde mandarlo no es un error**: se marca igual como resuelto para no reintentar todos los cuartos de hora.
+- Plantilla propia, con la política de cancelación y a dónde avisar.
 
-### 8.3 RLS en Postgres (red de seguridad)
+### 8.4 El lock de los crons
 
-Migración SQL manual:
+Hoy `@nestjs/schedule` corre en **cada instancia** y lo único que lo hace tolerable es que los dos jobs son idempotentes. Con recordatorios, "idempotente" ya no alcanza: dos réplicas mandarían dos mails a la misma persona (el unique de 8.3 lo ataja, pero por accidente, no por diseño).
 
-```sql
-ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
-CREATE POLICY tenant_isolation ON appointments
-  USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
--- repetir para cada tabla con tenant_id
-```
+- `pg_try_advisory_lock` alrededor de cada job. Sin servicio nuevo, sin dependencia nueva, y se libera solo si el proceso se cae.
 
-En `PrismaService`, antes de cada query (o por transacción):
+### 8.5 RLS en Postgres
 
-```ts
-await this.$executeRawUnsafe(`SET LOCAL app.current_tenant = '${tenantId}'`)
-```
+La red de seguridad final, y la única parte de esta fase que puede salir mal en silencio.
 
-> Validar que no rompa con el connection pool. Idealmente usar `$transaction` y setear el setting al inicio.
+- Rol de aplicación **sin** `BYPASSRLS` y **distinto del dueño** de las tablas, o `FORCE ROW LEVEL SECURITY` en cada una. Sin esto, las políticas no se aplican y todo "funciona".
+- `SET LOCAL app.current_tenant` **dentro de una transacción por request**, porque con un pool `SET LOCAL` fuera de transacción no dura hasta la query siguiente.
+- **El test es el entregable**: un e2e que desactive la extension de tenant-scope y muestre que la base igual no deja leer al vecino. Si eso no se puede escribir, RLS no está.
 
-### 8.4 BullMQ + Redis
+### 8.6 CORS del portal (deuda de la §7.5)
 
-```bash
-npm i @nestjs/bullmq bullmq ioredis
-```
+`CORS_ORIGINS` tiene que incluir el dominio del portal público cuando exista. No es código: es una variable de entorno y una línea en el README.
 
-Sumar Redis al `docker-compose.yml`.
-
-Colas iniciales:
-
-- `appointment-reminders` — encolar al crear/reprogramar un turno (24h y 2h antes). Cancelar al cancelar el turno.
-- `audit-logs` — sink del interceptor de 8.2.
-- `email` — envío asíncrono.
-
-**✅ Done cuando:** auditoría completa, notas funcionan, RLS activo y testeado (un tenant no puede leer datos de otro ni por bug en código), recordatorios encolados.
+**✅ Done cuando:** las notas funcionan con su regla de privacidad, lo que alguien podría querer negar queda registrado, los recordatorios salen una sola vez aunque haya tres réplicas, y hay un test que prueba que la base tapa un bug de la aplicación.
 
 ---
 

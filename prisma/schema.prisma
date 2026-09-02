@@ -86,6 +86,7 @@ model User {
   employee            Employee?
   createdAppointments Appointment[]
   recordedPayments    AppointmentPayment[]
+  notes               Note[]
 
   @@map("users")
 }
@@ -250,6 +251,8 @@ model Tenant {
 
   appointmentPayments  AppointmentPayment[]
   subscriptionPayments SubscriptionPayment[]
+
+  notes Note[]
 
   @@index([planId])
   @@map("tenants")
@@ -1068,4 +1071,62 @@ model SubscriptionPayment {
   @@index([subscriptionId])
   @@index([status])
   @@map("subscription_payments")
+}
+
+/// Sobre qué es una nota.
+///
+/// `GENERAL` es el único que va sin `entityId` —es la nota del negocio, no de
+/// nada en particular—; el resto lo exigen. Un CHECK en la base ata las dos
+/// mitades, así que no depende de que el DTO esté bien escrito.
+enum NoteEntityType {
+  CUSTOMER    @map("customer")
+  APPOINTMENT @map("appointment")
+  EMPLOYEE    @map("employee")
+  BRANCH      @map("branch")
+  GENERAL     @map("general")
+
+  @@map("note_entity_type")
+}
+
+/// Una bitácora interna: varias entradas, con autor y fecha.
+///
+/// **No reemplaza a `Customer.notes`, que es otra cosa.** Ese es el campo de la
+/// ficha —uno solo, editable, sin autor— y el panel ya lo usa. Esto es el
+/// historial: quién anotó qué y cuándo. Mezclarlos obligaría a elegir entre
+/// perder el historial o romperle el contrato al front.
+///
+/// **Polimórfica quiere decir sin FK al destino**: la base no puede garantizar
+/// que la entidad exista ni cascadear su borrado, así que se valida al escribir.
+/// El costo real es chico porque acá nada se borra físicamente (soft delete en
+/// todo el dominio) y una nota no queda apuntando al vacío.
+model Note {
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// Quién la escribió. No es opcional: una nota sin autor no se puede moderar
+  /// ni discutir, y `isPrivate` no tendría contra quién medirse.
+  authorUserId String @map("author_user_id") @db.Uuid
+
+  content String @db.Text
+
+  /// La ven su autor y el `OWNER`, nadie más.
+  ///
+  /// Es una regla de autorización que aplica `NotesService`, no una etiqueta:
+  /// si la lista no filtrara, "privada" sería una palabra que miente en la
+  /// pantalla.
+  isPrivate Boolean @default(false) @map("is_private")
+
+  entityType NoteEntityType @map("entity_type")
+  entityId   String?        @map("entity_id") @db.Uuid
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  author User   @relation(fields: [authorUserId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, entityType, entityId])
+  @@index([tenantId, createdAt])
+  @@map("notes")
 }
