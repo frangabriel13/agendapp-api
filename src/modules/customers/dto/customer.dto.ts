@@ -26,9 +26,9 @@ import { lowercaseTrim, trim } from '../../../common/utils/trim.transform';
  * El primer carácter admite `+` y `(` además del dígito: `(011) 5555-1234` es
  * una forma perfectamente normal de anotar un número.
  */
-const PHONE_PATTERN = '^[+(\\d][\\d\\s().+-]{4,29}$';
+export const PHONE_PATTERN = '^[+(\\d][\\d\\s().+-]{4,29}$';
 
-const PHONE_MESSAGE =
+export const PHONE_MESSAGE =
   'El teléfono solo puede tener números, espacios y los signos + ( ) - .';
 
 const DATE_MESSAGE =

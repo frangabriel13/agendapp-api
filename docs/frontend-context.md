@@ -280,7 +280,7 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 
 ## Qué existe hoy y qué no
 
-**Disponible — 92 endpoints:**
+**Disponible — 94 endpoints:**
 
 | Área | Endpoints | Alcanza para |
 |---|---|---|
@@ -297,13 +297,13 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 | `/appointments/:id/payments` | 3 | Saldo del turno, link de pago online, pagos en efectivo y devoluciones |
 | `/payments` | 2 | **Lo cobrado en un rango de fechas y lo que falta cobrar de ese rango**, los dos con totales. Es lo que necesita `/reportes` |
 | `/tenants/me/subscription` | 2 | Estado de la suscripción del negocio y el link para pagar el mes |
-| `/public/:slug` | 3 | **Portal público, sin token**: el negocio, sus sucursales y sus servicios reservables |
+| `/public/:slug` | 5 | **Portal público, sin token**: el negocio, sus sucursales, sus servicios reservables, la disponibilidad y **reservar** |
 | `/webhooks` | 1 | Aviso de pago de Mercado Pago. **No lo llama el front** |
 | `/health` | 1 | Healthcheck |
 
 **Todavía no existe:**
 
-- Reservar desde el portal público: la parte de *ver* ya está (`GET /public/:slug/...`), falta la disponibilidad recortada y el `POST` que agenda
+- Cancelar o reprogramar un turno desde el portal, sin cuenta: hace falta una tabla de tokens propia (un cliente no es un usuario) y decidir qué pasa con la seña. Por ahora el mail de confirmación dice a dónde llamar
 - Débito automático de la suscripción y devoluciones automáticas: hoy el mes se paga con un link, y una devolución se registra a mano
 
 No conviene diseñar contra estos: el contrato todavía no está definido y va a
@@ -667,7 +667,7 @@ Cuatro cosas que conviene tener claras:
 
 ⚠️ **Pide `OWNER` o `ADMINISTRATIVE`**, igual que `GET /payments`.
 
-### Portal público (Fase 7, en curso)
+### Portal público (Fase 7)
 
 Los únicos endpoints de la API que **no llevan token**. Cuelgan de
 `/public/:slug`, donde el `slug` es el del negocio (sale de
@@ -678,6 +678,8 @@ Los únicos endpoints de la API que **no llevan token**. Cuelgan de
 | `GET /public/:slug` | Branding, `timezone`, `currency` y las reglas de reserva |
 | `GET /public/:slug/branches` | Sucursales activas, con dirección, teléfono y horario de atención |
 | `GET /public/:slug/services` | Servicios reservables, agrupados por categoría |
+| `GET /public/:slug/availability` | Los horarios libres de un día, ya recortados a la ventana de reserva |
+| `POST /public/:slug/appointments` | Reservar |
 
 Un slug que no existe —o de un negocio dado de baja— es **404 con el mismo
 mensaje en los dos casos**, a propósito: distinguirlos dejaría averiguar qué
@@ -708,8 +710,60 @@ Los servicios sin categoría vienen **al final**, en un grupo `"Otros"` con
 `id: null`. No se esconden: un servicio sin categorizar es un descuido de carga,
 y sacarlo del portal convertiría ese descuido en plata que no entra.
 
-**Lo que todavía no está**: la disponibilidad pública y el `POST` que agenda.
-Hasta que existan, el portal se puede maquetar entero pero no reserva.
+**La disponibilidad pública es la misma que la del panel, recortada.** Mismos
+parámetros (`branchId`, `serviceIds` repetido, `date`, `employeeId` opcional) y
+misma respuesta, con una diferencia: **no ofrece nada fuera de la ventana de
+reserva**. Un día de más allá de `maxDaysAhead` devuelve `slots: []`, no un
+error — así una vista de mes no se rompe; para eso publicamos la ventana, para
+que puedas deshabilitar esos días vos.
+
+**El `POST` que reserva:**
+
+```jsonc
+{
+  "branchId": "…",
+  "serviceIds": ["…"],           // los mismos con los que consultaste
+  "startsAt": "2026-09-07T12:00:00.000Z",  // un startsAt de la grilla, tal cual vino
+  "employeeId": "…",             // opcional: sin esto lo elige el servidor
+  "customer": {
+    "firstName": "María",
+    "lastName": "González",      // opcional
+    "phone": "+54 9 11 5555-1234",
+    "email": "maria@…"           // opcional, pero sin esto no le llega nada
+  },
+  "notes": "…"                   // opcional, máx. 500
+}
+```
+
+Lo que hay que saber para armar la pantalla:
+
+- **`employeeId` es opcional y ese es el caso "cualquiera".** Cada slot de la
+  disponibilidad trae `employees[]`; si la persona no quiere elegir, no mandes
+  el campo y el servidor toma al que menos trabajo tiene ese día.
+- **La respuesta trae `deposit`.** Si es `null` el turno quedó `confirmed` y no
+  hay nada más que hacer. Si viene, el turno está en `pending_payment` y **no
+  está tomado**: mandá a la persona a `deposit.checkoutUrl`. Si no paga, el
+  hueco **se libera solo** a la media hora.
+- **La respuesta no dice nada del cliente**, ni siquiera si ya existía. Es a
+  propósito: si contestara distinto según el teléfono, cualquiera podría
+  averiguar quién es clienta del negocio probando números. Quien reservó ya sabe
+  sus propios datos.
+- **`409` es "ese horario ya no está".** Cubre las tres razones —se llenó, la
+  sucursal cerró, o el horario cae fuera de la ventana— con el mismo mensaje,
+  porque para quien reserva la acción es la misma: elegir otro. Volvé a pedir la
+  disponibilidad y refrescá la grilla.
+- **`403`** es el negocio con las reservas apagadas (`booking.enabled: false`).
+  **`402`** es el negocio con la suscripción vencida: el portal se ve igual, lo
+  que no se puede es reservar. **`502`** es que no se pudo generar el link de
+  pago; el turno queda reservado sin pagar y se libera solo, así que reintentar
+  es seguro.
+- **El límite de pedidos del `POST` es mucho más bajo que el de los `GET`**
+  (3/min y 15/hora por IP, contra 5/s y 60/min): cada reserva le ocupa un hueco
+  al negocio. No hace falta hacer nada especial, solo no reintentar en loop.
+
+Cuando la reserva entra salen **dos mails**: la confirmación a quien reservó
+(con el link de pago si falta la seña) y el aviso al negocio. Si el mail falla,
+la reserva igual queda — como en el resto de la API.
 
 ### Detalle sobre la suscripción del negocio (Fase 6)
 

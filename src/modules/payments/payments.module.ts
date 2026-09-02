@@ -28,5 +28,7 @@ import { WebhooksController } from './webhooks.controller';
     WebhooksController,
   ],
   providers: [PaymentsService],
+  // Lo usa el portal público para abrir el cobro de la seña de una reserva.
+  exports: [PaymentsService],
 })
 export class PaymentsModule {}

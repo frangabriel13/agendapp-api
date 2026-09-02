@@ -193,3 +193,43 @@ export function overlaps(a: Interval, b: Interval): boolean {
     a.start.getTime() < b.end.getTime() && b.start.getTime() < a.end.getTime()
   );
 }
+
+/**
+ * Hasta dónde llega lo que el portal público acepta reservar.
+ *
+ * `findAvailability` describe **lo que el horario permite**, y eso incluye lo
+ * que ya pasó: para el mostrador está bien, porque atiende a quien llegó sin
+ * turno y a veces carga un turno de hace una hora. Para un desconocido no —sin
+ * un piso reserva para dentro de tres minutos, y sin un techo para dentro de
+ * dos años—, así que el portal pasa esta ventana y los slots de afuera no se
+ * ofrecen.
+ */
+export interface BookingWindow {
+  /** Nada que arranque antes. Es `ahora + minBookingNoticeMinutes`. */
+  notBefore: Date;
+  /** Nada que termine después. Es el fin del último día reservable. */
+  notAfter: Date;
+}
+
+/**
+ * Si el hueco entra **entero** en la ventana.
+ *
+ * Entero y no "que arranque adentro": un turno que empieza el último día
+ * permitido y termina al otro no es reservable, porque lo que se está
+ * comprometiendo es todo el rato, no el instante de inicio.
+ *
+ * ⚠️ **Esto filtra slots ya cortados, no recorta los ratos libres antes de
+ * cortarlos.** La diferencia importa: recortando antes, un `notBefore` a las
+ * 10:20 haría arrancar la grilla a las 10:20 y el portal ofrecería horarios
+ * distintos a los del panel para el mismo día. Filtrando después, la grilla es
+ * la misma y lo único que cambia es cuáles se muestran.
+ */
+export function withinBookingWindow(
+  slot: Interval,
+  window: BookingWindow,
+): boolean {
+  return (
+    slot.start.getTime() >= window.notBefore.getTime() &&
+    slot.end.getTime() <= window.notAfter.getTime()
+  );
+}
