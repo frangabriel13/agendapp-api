@@ -943,7 +943,7 @@ Decía "throttling agresivo, ej. 30 req/min por IP". Eso era lo de menos.
 
 ## 📝 FASE 8 — Transversales finales
 
-> **8.1 cerrada el 2026-09-02.** El plan original eran cuatro bullets: notas, auditoría, RLS y BullMQ+Redis.
+> **8.1 y 8.2 cerradas el 2026-09-02.** El plan original eran cuatro bullets: notas, auditoría, RLS y BullMQ+Redis.
 > Revisado contra el código el 2026-09-02, **dos de los cuatro estaban pedidos al
 > revés**: la cola de Redis resuelve un problema que todavía no tenemos, y el
 > interceptor de auditoría "con diff" no puede cumplir lo que promete desde
@@ -969,7 +969,7 @@ Migración: `Note` polimórfica, con `entityType` ENUM (`CUSTOMER`, `APPOINTMENT
 - **Una nota privada ajena responde 404, no 403.** Un 403 confirmaría que existe, que es justo lo que "privada" tiene que esconder. Y el filtro va en el `WHERE`, no al armar la respuesta: filtrar en memoria funciona hasta que alguien agrega un `count` y se olvida de repetir la regla.
 - **Tests**: 20 e2e. Verificado mutando dos veces: dejar el filtro de privacidad en `{}` rompe 2, y sacar el chequeo de autoría al editar rompe otros 2.
 
-### 8.2 Auditoría
+### ✅ 8.2 Auditoría (2026-09-02)
 
 Migración: `AuditLog` (ya está en `TENANT_EXEMPT_MODELS` y en `SOFT_DELETE_EXEMPT_MODELS` desde la Fase 1, esperando esto).
 
@@ -977,7 +977,12 @@ Migración: `AuditLog` (ya está en `TENANT_EXEMPT_MODELS` y en `SOFT_DELETE_EXE
 - **Lista de campos que nunca se guardan** (`password`, `token`, `secret`, …), aplicada por nombre y en profundidad. Es la segunda defensa: aunque alguien marque `/auth/login`, la contraseña no llega a la base.
 - **Escribe sin bloquear la respuesta y sin voltearla**: si el INSERT falla, va al log y el request sigue. Mismo criterio que los mails — un problema de auditoría no puede convertirse en un problema del usuario.
 - **`tenantId` y `userId` son nullables** a propósito: hay acciones del sistema (un cron, un webhook) que no tienen ninguno de los dos.
-- Qué se marca primero: login, alta/baja de empleados, cambios de rol, cancelaciones de turno y movimientos de plata cargados a mano. Es decir, **lo que alguien podría querer negar después**.
+- Qué quedó marcado: login (y **los que no entraron**), reset y cambio de contraseña, alta/baja/edición de empleados y su activación, cambios de estado y reprogramaciones de turno, y los pagos cargados a mano. Es decir, **lo que alguien podría querer negar después**. Nueve endpoints; las lecturas no se auditan.
+- **`GET /audit-logs`, solo `OWNER`**, no estaba en el plan y hacía falta: un rastro que nadie puede leer es una tabla, no una auditoría. Paginado, con filtros por entidad, persona, acción y rango de días del negocio (tope de 92: la tabla no se borra nunca).
+- ⚠️ **`AuditLog` está en `TENANT_EXEMPT_MODELS`**, porque su `tenantId` es nullable (un login fallido no tiene negocio). La exención es correcta y tiene una consecuencia peligrosa: **del lado de la lectura no hay extension que filtre**, y el `tenantId` lo pone `AuditLogsService.scopeOf()` a mano. Sin esa línea, cualquier dueño vería el rastro de todos los negocios del sistema. Hay un e2e que la sostiene.
+- **Se espera al INSERT antes de responder**, contra lo que decía el plan viejo. Soltarlo (`void record(...)`) suena bien hasta que se ve el efecto: un registro que puede estar o no estar cuando lo mirás no es un registro, y el propio test lo destapó. Son nueve endpoints de baja frecuencia y un INSERT en el mismo pool.
+- **`/auth/login` ahora resuelve el contexto de tenant cuando la contraseña verifica.** No es un truco para la auditoría: era el único lugar del sistema que autenticaba a alguien y dejaba el contexto sin resolver, y el síntoma fue que el registro de "quién entró" quedaba huérfano y su propio dueño no podía verlo.
+- **Tests**: 12 unitarios de `redactSecrets` y 13 e2e. Verificado mutando dos veces: sacar la censura rompe 3 unitarios y 2 e2e (entre ellos, la contraseña aparece en la base); sacar el filtro por negocio rompe el de aislamiento.
 
 ### 8.3 Recordatorios de turno
 

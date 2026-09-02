@@ -280,7 +280,7 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 
 ## Qué existe hoy y qué no
 
-**Disponible — 99 endpoints:**
+**Disponible — 100 endpoints:**
 
 | Área | Endpoints | Alcanza para |
 |---|---|---|
@@ -299,6 +299,7 @@ Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
 | `/tenants/me/subscription` | 2 | Estado de la suscripción del negocio y el link para pagar el mes |
 | `/public/:slug` | 5 | **Portal público, sin token**: el negocio, sus sucursales, sus servicios reservables, la disponibilidad y **reservar** |
 | `/notes` | 5 | **Bitácora interna**: anotar sobre un cliente, un turno, un empleado, una sucursal o el negocio, con autor y privacidad |
+| `/audit-logs` | 1 | **Quién hizo qué**, solo para el dueño |
 | `/webhooks` | 1 | Aviso de pago de Mercado Pago. **No lo llama el front** |
 | `/health` | 1 | Healthcheck |
 
@@ -791,6 +792,34 @@ existe). La ven su autor y el dueño del negocio, nadie más.
 
 Editar y borrar es del autor o del dueño; cualquier otro recibe **403**. Lo que
 no se edita nunca es el destino: una nota que cambia de entidad es otra nota.
+
+### Auditoría (Fase 8)
+
+`GET /audit-logs`, **solo `OWNER`** — cualquier otro rol recibe 403. No es una
+restricción de configuración como las demás: la auditoría dice quién hizo qué,
+y dársela a alguien más la convierte en una herramienta para vigilar
+compañeros.
+
+Es **solo lectura**, y no por falta de tiempo: la tabla es append-only. Un
+rastro que se puede editar desde la API no sirve para lo que existe.
+
+Paginado y de lo más nuevo. Filtros: `entityType` + `entityId` (el historial de
+una cosa), `userId` (el de una persona), `action`, y `from`/`to` en días del
+calendario del negocio — **las dos puntas juntas, y máximo 92 días** (la tabla
+no se borra nunca).
+
+**Solo se registra lo que está marcado**: entrar (incluidos los intentos que no
+entraron), reset y cambio de contraseña, mover gente del equipo, cambiar
+estados y reprogramar turnos, y cargar pagos a mano. **Las lecturas no se
+auditan** — para eso están los logs de acceso.
+
+`changes` trae **con qué datos se pidió**, ya censurado: contraseñas, tokens y
+firmas nunca llegan a guardarse. Ojo con una expectativa razonable que no se
+cumple: **no es un diff contra el estado anterior**. Un interceptor no tiene la
+foto de antes, así que lo que hay es lo que se pidió, no lo que cambió.
+
+`user` viene en `null` cuando no había nadie identificado — un login que no
+entró, o una acción del sistema.
 
 ### Detalle sobre la suscripción del negocio (Fase 6)
 

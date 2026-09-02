@@ -82,6 +82,7 @@ model User {
 
   refreshTokens       RefreshToken[]
   tokens              UserToken[]
+  auditLogs           AuditLog[]
   ownedTenant         Tenant?
   employee            Employee?
   createdAppointments Appointment[]
@@ -252,7 +253,8 @@ model Tenant {
   appointmentPayments  AppointmentPayment[]
   subscriptionPayments SubscriptionPayment[]
 
-  notes Note[]
+  notes     Note[]
+  auditLogs AuditLog[]
 
   @@index([planId])
   @@map("tenants")
@@ -1129,4 +1131,54 @@ model Note {
   @@index([tenantId, entityType, entityId])
   @@index([tenantId, createdAt])
   @@map("notes")
+}
+
+/// Quién hizo qué, cuándo y desde dónde.
+///
+/// **Append-only**: no tiene `deletedAt` ni se actualiza nunca. Está en
+/// `SOFT_DELETE_EXEMPT_MODELS` y en `TENANT_EXEMPT_MODELS` desde la Fase 1,
+/// esperando esto.
+///
+/// `tenantId` y `userId` son **nullables a propósito**: hay acciones sin
+/// ninguno de los dos. Un login fallido es el caso — todavía no hay sesión, y
+/// justamente por eso interesa registrarlo.
+///
+/// Las FK son `SetNull` y no `Cascade`: un registro de auditoría que desaparece
+/// junto con lo que audita no es un registro de auditoría. Con soft delete en
+/// todo el dominio esto no se dispara nunca, pero el día que alguien corra un
+/// borrado real, la fila tiene que sobrevivir aunque quede anónima.
+model AuditLog {
+  id       String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String? @map("tenant_id") @db.Uuid
+  userId   String? @map("user_id") @db.Uuid
+
+  /// `login`, `created`, `updated`, `deleted`, `canceled`… Texto y no enum a
+  /// propósito: una auditoría tiene que poder registrar una acción nueva **el
+  /// día que se agrega**, y un enum obligaría a una migración en el medio — con
+  /// el resultado de que, mientras tanto, esa acción no se registra. Los
+  /// valores válidos viven en `AuditAction` (TypeScript), que es donde una
+  /// falta de ortografía se ve.
+  action String @db.VarChar(50)
+
+  entityType String  @map("entity_type") @db.VarChar(50)
+  entityId   String? @map("entity_id") @db.Uuid
+
+  /// Con qué datos se hizo, **ya censurado**: `redactSecrets` saca contraseñas
+  /// y tokens antes de llegar acá. No es un diff contra el estado anterior — un
+  /// interceptor no lo tiene — sino lo que se pidió.
+  changes Json? @db.JsonB
+
+  /// 45 caracteres es el largo máximo de una IPv6 escrita.
+  ipAddress String? @map("ip_address") @db.VarChar(45)
+  userAgent String? @map("user_agent") @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([entityType, entityId])
+  @@index([userId, createdAt])
+  @@map("audit_logs")
 }

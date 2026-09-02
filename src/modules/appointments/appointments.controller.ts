@@ -8,6 +8,7 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
+import { Audited, AuditAction, AuditEntity } from '../../common/audit';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -194,6 +195,13 @@ export class AppointmentsController {
   }
 
   @Patch(':id/status')
+  // `updated` y no `canceled`: por acá pasan todos los cambios de estado, y
+  // cuál fue lo dice `changes.status`. Nombrar la acción por el caso que nos
+  // interesa haría que un turno marcado como atendido figure como cancelado.
+  @Audited({
+    action: AuditAction.UPDATED,
+    entityType: AuditEntity.APPOINTMENT,
+  })
   @ApiOperation({
     summary: 'Confirma, cancela o cierra un turno',
     description:
@@ -215,6 +223,10 @@ export class AppointmentsController {
   }
 
   @Post(':id/reschedule')
+  @Audited({
+    action: AuditAction.UPDATED,
+    entityType: AuditEntity.APPOINTMENT,
+  })
   @ApiOperation({
     summary: 'Mueve un turno a otro horario',
     description:

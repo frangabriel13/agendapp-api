@@ -13,6 +13,7 @@ import {
   UserTokenPurpose,
 } from '@prisma/client';
 import { MailService } from '../../common/mail';
+import { TenantContextService } from '../../common/tenant-context';
 import { isReservedSlug, slugify } from '../../common/utils/slug.util';
 import type { Env } from '../../config/env.schema';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -56,6 +57,7 @@ export class AuthService {
     private readonly refreshTokens: RefreshTokenService,
     private readonly userTokens: UserTokenService,
     private readonly mail: MailService,
+    private readonly tenantContext: TenantContextService,
     config: ConfigService<Env, true>,
   ) {
     this.trialDays = config.get('TRIAL_DAYS', { infer: true });
@@ -211,6 +213,22 @@ export class AuthService {
     await this.prisma.user.update({
       where: { id: user.id },
       data: { lastLoginAt: new Date() },
+    });
+
+    // Recién ahora este request tiene una identidad, así que se la contamos al
+    // contexto. **No es un truco para que la auditoría funcione**: es que
+    // `/auth/login` era el único lugar del sistema que autenticaba a alguien y
+    // dejaba el contexto sin resolver. El efecto visible es que el `AuditLog`
+    // del login queda atribuido a su negocio en vez de quedar huérfano — y un
+    // registro de quién entró que el dueño no puede ver no sirve para nada.
+    //
+    // Es seguro: el handler ya terminó de leer, nada corre después salvo los
+    // interceptors, y el store del ALS muere con el request.
+    this.tenantContext.set({
+      tenantId: employee.tenantId,
+      userId: user.id,
+      employeeId: employee.id,
+      role: employee.role,
     });
 
     return this.issueTokens(user.id, employee);
