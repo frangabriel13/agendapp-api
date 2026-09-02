@@ -49,3 +49,30 @@ export function maintenanceDatabaseUrl(): string {
   url.search = '';
   return url.toString();
 }
+
+/**
+ * El rol con el que la app corre en los e2e: **sin superusuario y sin
+ * BYPASSRLS**, para que las políticas de RLS efectivamente corten.
+ *
+ * No es un detalle del harness: con el rol dueño de las tablas, Postgres ignora
+ * RLS por completo (`FORCE` incluido) y toda la suite pasaría en verde sin que
+ * ninguna política estuviera haciendo nada. Corriendo así, cada uno de los
+ * cientos de e2e que ya existen es también una prueba de que RLS no rompe
+ * nada.
+ *
+ * Las migraciones y el seed siguen corriendo con el rol dueño, en el
+ * `globalSetup`: este rol no puede hacer DDL a propósito.
+ */
+export const RLS_TEST_ROLE = 'agendapp_e2e';
+
+/** Solo para la base de tests local. No hay nada que proteger acá. */
+export const RLS_TEST_PASSWORD = 'agendapp_e2e';
+
+export function restrictedTestDatabaseUrl(): string {
+  const url = new URL(testDatabaseUrl());
+
+  url.username = RLS_TEST_ROLE;
+  url.password = RLS_TEST_PASSWORD;
+
+  return url.toString();
+}
