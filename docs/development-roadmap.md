@@ -943,7 +943,7 @@ Decía "throttling agresivo, ej. 30 req/min por IP". Eso era lo de menos.
 
 ## 📝 FASE 8 — Transversales finales
 
-> **8.1 y 8.2 cerradas el 2026-09-02.** El plan original eran cuatro bullets: notas, auditoría, RLS y BullMQ+Redis.
+> **8.1 a 8.4 cerradas el 2026-09-02.** Queda 8.5 (RLS) y 8.6 (CORS). El plan original eran cuatro bullets: notas, auditoría, RLS y BullMQ+Redis.
 > Revisado contra el código el 2026-09-02, **dos de los cuatro estaban pedidos al
 > revés**: la cola de Redis resuelve un problema que todavía no tenemos, y el
 > interceptor de auditoría "con diff" no puede cumplir lo que promete desde
@@ -984,18 +984,29 @@ Migración: `AuditLog` (ya está en `TENANT_EXEMPT_MODELS` y en `SOFT_DELETE_EXE
 - **`/auth/login` ahora resuelve el contexto de tenant cuando la contraseña verifica.** No es un truco para la auditoría: era el único lugar del sistema que autenticaba a alguien y dejaba el contexto sin resolver, y el síntoma fue que el registro de "quién entró" quedaba huérfano y su propio dueño no podía verlo.
 - **Tests**: 12 unitarios de `redactSecrets` y 13 e2e. Verificado mutando dos veces: sacar la censura rompe 3 unitarios y 2 e2e (entre ellos, la contraseña aparece en la base); sacar el filtro por negocio rompe el de aislamiento.
 
-### 8.3 Recordatorios de turno
+### ✅ 8.3 Recordatorios de turno (2026-09-02)
 
 - Tabla `AppointmentReminder` con **UNIQUE `(appointment_id, kind)`**: el propio unique es lo que hace idempotente al job, igual que `mp_payment_id` con el webhook. Sin eso, dos réplicas mandan dos mails.
 - Cron cada 15 minutos que busca turnos que arrancan dentro de la ventana de cada recordatorio (24 h y 2 h). Un turno cancelado no entra: se filtra por estado, no hay nada que "desencolar".
 - Solo a quien dejó mail. **Que no haya a dónde mandarlo no es un error**: se marca igual como resuelto para no reintentar todos los cuartos de hora.
-- Plantilla propia, con la política de cancelación y a dónde avisar.
+- Plantilla propia, con la política de cancelación y a dónde avisar. **Un solo texto para los dos momentos**, con el asunto como única diferencia: la tentación es escribir "tu turno es mañana" en el de la víspera, pero su ventana es de 24 horas y no "el día anterior" — un turno de hoy a la noche entra igual y el mail diría una fecha equivocada.
+- ⚠️ **Las dos ventanas no se pisan**: `(0, 2h]` para el inminente y `(2h, 24h]` para el de la víspera. Si la segunda fuera "las próximas 24 horas" a secas, un turno de dentro de una hora entraría en las dos y la clienta recibiría dos mails seguidos diciendo lo mismo. Verificado mutando.
+- **Primero se reserva la fila, después se manda el mail.** Al revés, dos instancias mandarían los dos mails antes de que ninguna anotara nada. Verificado mutando: invirtiendo el orden rompen 6 tests.
+- **No se recuerda un turno agendado hace menos de una hora**: recordar algo exige que haya habido tiempo de olvidarlo, y sin esto quien reserva para esta tarde recibe la confirmación y, al tick siguiente, un mail recordándole lo que acaba de hacer.
+- **Ni los `PENDING_PAYMENT`**: ese turno se libera solo si nadie paga, así que prometerle el horario sería mentir.
+- **El mail sale afuera del lock**, porque `JobLockService` sostiene una transacción durante todo el callback y no se espera a un proveedor HTTP con una transacción abierta. Consecuencia aceptada: si el proceso muere entre la reserva y el envío, ese aviso se pierde. Es el lado correcto para fallar — un recordatorio perdido es una molestia, uno duplicado se lee como spam.
+- Tope de 200 por corrida: el cron pasa cada 15 minutos y lo que no entra sale en la siguiente.
+- **Tests**: 13 e2e.
 
-### 8.4 El lock de los crons
+### ✅ 8.4 El lock de los crons (2026-09-02)
 
 Hoy `@nestjs/schedule` corre en **cada instancia** y lo único que lo hace tolerable es que los dos jobs son idempotentes. Con recordatorios, "idempotente" ya no alcanza: dos réplicas mandarían dos mails a la misma persona (el unique de 8.3 lo ataja, pero por accidente, no por diseño).
 
-- `pg_try_advisory_lock` alrededor de cada job. Sin servicio nuevo, sin dependencia nueva, y se libera solo si el proceso se cae.
+- `JobLockService.run(nombre, work)`, `@Global`. Sin servicio nuevo, sin dependencia nueva, y se libera solo si el proceso se cae.
+- ⚠️ **Es `pg_try_advisory_xact_lock` y no `pg_try_advisory_lock`, y ahí estaba el costo que el plan viejo escondía.** El de sesión hay que soltarlo a mano, y con un pool de conexiones el `unlock` puede salir por una conexión distinta de la que tomó el lock: el resultado sería un lock que no se libera nunca. El de transacción lo suelta Postgres al terminar, siempre.
+- La consecuencia de esa elección: **el trabajo corre con la transacción abierta**, sosteniendo una conexión. Está bien para los jobs que solo consultan, y es exactamente la razón por la que los recordatorios mandan los mails afuera.
+- **El lock se toma en el cron, no en el service.** Así `releaseAbandoned` sigue devolviendo cuántos soltó y no "cuántos soltó o `null` si otra instancia lo estaba haciendo", y una llamada directa (un test, un script) corre sin pedir permiso — que es lo que uno quiere de una llamada directa. La excepción es el job de recordatorios, cuya sección crítica es solo el reclamo.
+- **Tests**: 3 unitarios de la clave y 4 e2e contra Postgres. El que importa prueba que **de verdad excluye**: si el `pg_try_advisory_xact_lock` no tomara el lock, los dos callbacks entrarían. Verificado mutando.
 
 ### 8.5 RLS en Postgres
 

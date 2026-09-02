@@ -156,3 +156,51 @@ export function bookingNoticeMail(params: {
     footer: ['La reserva ya está en tu agenda. No hace falta que hagas nada.'],
   };
 }
+
+/**
+ * El recordatorio previo al turno.
+ *
+ * **Un solo texto para los dos momentos**, con el asunto como única diferencia.
+ * La tentación es escribir "tu turno es mañana" en el de la víspera, pero la
+ * ventana de ese recordatorio es de 24 horas y no "el día anterior": un turno
+ * de hoy a la noche entra igual, y el mail diría una fecha equivocada. La fecha
+ * completa la dice el cuerpo y no se equivoca nunca.
+ */
+export function appointmentReminderMail(params: {
+  firstName: string;
+  appointment: BookingMailAppointment;
+  imminent: boolean;
+  cancellationPolicyHours: number;
+  businessPhone: string | null;
+}): MailContent {
+  const { appointment: appt } = params;
+  const when = formatWhen(appt.startsAt, appt.timezone);
+  const services = appt.serviceNames.join(', ');
+  const where =
+    appt.branchAddress === null
+      ? appt.branchName
+      : `${appt.branchName} (${appt.branchAddress})`;
+
+  const aviso =
+    params.businessPhone === null
+      ? `Si no vas a poder venir, avisale a ${appt.businessName}`
+      : `Si no vas a poder venir, avisale a ${appt.businessName} al ${params.businessPhone}`;
+
+  return {
+    subject: params.imminent
+      ? `Tu turno en ${appt.businessName} es en un rato`
+      : `Te recordamos tu turno en ${appt.businessName}`,
+    preview: `${when}, en ${appt.branchName}.`,
+    heading: params.imminent ? 'Tu turno es en un rato' : 'Te esperamos',
+    paragraphs: [
+      `Hola ${params.firstName}: te recordamos tu turno.`,
+      `${services} con ${appt.employeeName}.`,
+      `${when}, en ${where}.`,
+    ],
+    footer: [
+      params.cancellationPolicyHours > 0
+        ? `${aviso} con al menos ${params.cancellationPolicyHours} horas de anticipación.`
+        : `${aviso}.`,
+    ],
+  };
+}

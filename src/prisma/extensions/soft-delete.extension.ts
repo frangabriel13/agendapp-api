@@ -10,6 +10,7 @@ export const SOFT_DELETE_EXEMPT_MODELS = new Set<string>([
   'RefreshToken',
   'UserToken', // token de un solo uso, como RefreshToken
   'AuditLog',
+  'AppointmentReminder', // append-only: la fila ES la marca de que ya se resolvió
   'Plan', // catálogo global: se da de baja con `isActive`, no con deletedAt
   'Subscription',
   'TenantBranding',

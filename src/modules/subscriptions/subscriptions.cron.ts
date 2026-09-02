@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { JobLockService } from '../../common/jobs';
 import { SubscriptionsService } from './subscriptions.service';
 
 /**
@@ -9,18 +10,20 @@ import { SubscriptionsService } from './subscriptions.service';
  * Separado a propósito: así el vencimiento se puede probar (y forzar a mano)
  * sin esperar a que den las 3 de la mañana.
  *
- * ⚠️ **Corre en cada instancia de la app.** `@nestjs/schedule` no coordina
- * réplicas, así que con dos procesos esto se ejecuta dos veces. No es un
- * problema porque `expireLapsed` es idempotente —la segunda corrida no
- * encuentra nada que vencer— pero es la razón por la que cualquier job que se
- * agregue acá tiene que serlo también, hasta que exista el lock de la cola
- * (Fase 8).
+ * ⚠️ **`@nestjs/schedule` no coordina réplicas**: con dos procesos, el `@Cron`
+ * dispara dos veces. Quien desempata es `JobLockService` (advisory lock de
+ * Postgres): la instancia que no consigue el lock se saltea el tick sin
+ * esperar. Que `expireLapsed` además sea idempotente sigue siendo cierto y
+ * sigue estando bien, pero ya no es lo único que sostiene la corrección.
  */
 @Injectable()
 export class SubscriptionsCron {
   private readonly logger = new Logger(SubscriptionsCron.name);
 
-  constructor(private readonly subscriptions: SubscriptionsService) {}
+  constructor(
+    private readonly subscriptions: SubscriptionsService,
+    private readonly jobLock: JobLockService,
+  ) {}
 
   /**
    * De madrugada, cuando no hay nadie usando la agenda: un negocio que se
@@ -30,11 +33,13 @@ export class SubscriptionsCron {
   @Cron(CronExpression.EVERY_DAY_AT_3AM, { name: 'expire-subscriptions' })
   async expireLapsed(): Promise<void> {
     try {
-      const count = await this.subscriptions.expireLapsed();
+      await this.jobLock.run('expire-subscriptions', async () => {
+        const count = await this.subscriptions.expireLapsed();
 
-      if (count > 0) {
-        this.logger.log({ count }, 'Suscripciones vencidas');
-      }
+        if (count > 0) {
+          this.logger.log({ count }, 'Suscripciones vencidas');
+        }
+      });
     } catch (error) {
       // Un job que lanza tumba el proceso: una excepción en un callback de
       // timer no tiene quién la agarre más arriba.
