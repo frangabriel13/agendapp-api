@@ -1,5 +1,9 @@
-import { Controller, Get } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query } from '@nestjs/common';
 import {
+  ApiBadGatewayResponse,
+  ApiConflictResponse,
+  ApiCreatedResponse,
+  ApiForbiddenResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -8,6 +12,15 @@ import {
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { PublicTenant } from '../../common/decorators/public-tenant.decorator';
+import { RequiresActiveSubscription } from '../../common/decorators/requires-active-subscription.decorator';
+import {
+  AvailabilityQueryDto,
+  AvailabilityResponseDto,
+} from '../appointments/dto/availability.dto';
+import {
+  CreatePublicBookingDto,
+  PublicBookingResponseDto,
+} from './dto/public-booking.dto';
 import {
   PublicBranchDto,
   PublicServiceGroupDto,
@@ -24,6 +37,22 @@ import { PublicService } from './public.service';
 const PORTAL_THROTTLE = {
   short: { limit: 5, ttl: 1_000 },
   long: { limit: 60, ttl: 60_000 },
+};
+
+/**
+ * El del `POST` es mucho más duro que el de los `GET`, y no por el costo de
+ * servirlo: cada reserva **le ocupa un hueco al negocio**. Sin un límite propio,
+ * alguien le llena la agenda de la semana con teléfonos inventados y el límite
+ * de lectura ni se entera, porque cincuenta reservas son cincuenta pedidos.
+ *
+ * Quince por hora deja pasar a una familia reservando desde la misma casa y no
+ * a un script. **No alcanza solo** —las IPs son baratas—; es la primera capa,
+ * y la que de verdad limita el daño es que un turno sin seña pagada se libera
+ * a los `ABANDONED_HOLD_MINUTES`.
+ */
+const BOOKING_THROTTLE = {
+  short: { limit: 3, ttl: 60_000 },
+  long: { limit: 15, ttl: 3_600_000 },
 };
 
 /**
@@ -88,5 +117,59 @@ export class PublicController {
   @ApiOkResponse({ type: [PublicServiceGroupDto] })
   findServices(): Promise<PublicServiceGroupDto[]> {
     return this.portal.findServices();
+  }
+
+  @Get('availability')
+  @ApiOperation({
+    summary: 'Los horarios libres de un día',
+    description:
+      'El mismo cálculo que usa el panel, **recortado a la ventana de reserva** ' +
+      'del negocio: nada antes de la antelación mínima ni después del último ' +
+      'día permitido.\n\n' +
+      'Un día fuera de la ventana devuelve `slots: []`, no un error: el portal ' +
+      'ya sabe la ventana por `GET /public/:slug` y puede deshabilitar esos ' +
+      'días, y un 400 rompería la vista de un mes entero.\n\n' +
+      'Cada slot trae `employees[]`: son los que tienen ese hueco libre. Si ' +
+      'quien reserva no quiere elegir, se manda el turno sin `employeeId`.',
+  })
+  @ApiOkResponse({ type: AvailabilityResponseDto })
+  @ApiForbiddenResponse({
+    description: 'El negocio no toma reservas por la web',
+  })
+  findAvailability(
+    @Query() query: AvailabilityQueryDto,
+  ): Promise<AvailabilityResponseDto> {
+    return this.portal.findAvailability(query);
+  }
+
+  @Post('appointments')
+  @Throttle(BOOKING_THROTTLE)
+  @RequiresActiveSubscription()
+  @ApiOperation({
+    summary: 'Reservar un turno',
+    description:
+      'Sin cuenta y sin token. A la persona se la identifica por el **teléfono**: ' +
+      'si ya es clienta del negocio se usa su ficha y si no se crea una, y **la ' +
+      'respuesta es idéntica en los dos casos** — distinguirlas convertiría ' +
+      'esto en un buscador de clientela ajena.\n\n' +
+      '`employeeId` es opcional: sin él lo elige el servidor entre los que ' +
+      'tienen el hueco libre.\n\n' +
+      'Si los servicios tienen seña, el turno nace **esperando el pago** y la ' +
+      'respuesta trae `deposit.checkoutUrl`. Hasta que la seña entre el turno ' +
+      'no está tomado: se libera solo si nadie paga. Acá no se mira ' +
+      '`requireDepositForBooking` — ese setting es para el mostrador.',
+  })
+  @ApiCreatedResponse({ type: PublicBookingResponseDto })
+  @ApiForbiddenResponse({
+    description: 'El negocio no toma reservas por la web',
+  })
+  @ApiConflictResponse({ description: 'Ese horario ya no está disponible' })
+  @ApiBadGatewayResponse({
+    description:
+      'No se pudo generar el link de pago. El turno queda reservado sin pagar ' +
+      'y se libera solo: se puede reintentar.',
+  })
+  book(@Body() dto: CreatePublicBookingDto): Promise<PublicBookingResponseDto> {
+    return this.portal.book(dto);
   }
 }

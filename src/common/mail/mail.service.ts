@@ -1,5 +1,10 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { MAIL_PROVIDER, type MailProvider } from './mail.types';
+import {
+  bookingConfirmationMail,
+  bookingNoticeMail,
+  type BookingMailAppointment,
+} from './templates/booking';
 import { type MailContent, renderHtml, renderText } from './templates/layout';
 import {
   emailVerificationMail,
@@ -58,6 +63,31 @@ export class MailService {
     expiresAt: Date;
   }): Promise<boolean> {
     return this.deliver(params.to, employeeInvitationMail(params));
+  }
+
+  /**
+   * A quien reservó desde el portal público: qué reservó y, si falta seña, el
+   * link para pagarla.
+   */
+  sendBookingConfirmation(params: {
+    to: string;
+    firstName: string;
+    appointment: BookingMailAppointment;
+    deposit?: { amountCents: number; currency: string; url: string };
+    businessPhone: string | null;
+  }): Promise<boolean> {
+    return this.deliver(params.to, bookingConfirmationMail(params));
+  }
+
+  /** Al negocio: entró una reserva por la web, y con qué teléfono ubicarla. */
+  sendBookingNotice(params: {
+    to: string;
+    appointment: BookingMailAppointment;
+    customerName: string;
+    customerPhone: string;
+    awaitingDeposit: boolean;
+  }): Promise<boolean> {
+    return this.deliver(params.to, bookingNoticeMail(params));
   }
 
   /**

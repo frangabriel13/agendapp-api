@@ -76,9 +76,10 @@ import type { Env } from './config/env.schema';
     // La lista vive en su propio archivo porque `main.ts` la necesita para
     // saber qué headers de rate limit exponer por CORS.
     ThrottlerModule.forRoot(THROTTLERS),
-    // Habilita los `@Cron(...)`. Hoy lo usa solo el vencimiento de
-    // suscripciones. Ojo: los jobs corren en CADA instancia de la app, así que
-    // todo lo que se agregue tiene que ser idempotente.
+    // Habilita los `@Cron(...)`: el vencimiento de suscripciones y la
+    // liberación de reservas públicas sin pagar. Ojo: los jobs corren en CADA
+    // instancia de la app, así que todo lo que se agregue tiene que ser
+    // idempotente.
     ScheduleModule.forRoot(),
     TenantContextModule,
     PrismaModule,

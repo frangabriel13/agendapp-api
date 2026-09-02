@@ -7,6 +7,7 @@ import {
   overlaps,
   splitIntoSlots,
   subtractIntervals,
+  withinBookingWindow,
   type Interval,
 } from './availability';
 
@@ -289,5 +290,70 @@ describe('días con cambio de hora', () => {
     ];
 
     expect(splitIntoSlots(jornada, 60)).toHaveLength(7);
+  });
+});
+
+/**
+ * La ventana del portal público. El recorte se aplica sobre slots ya cortados,
+ * así que lo único que se prueba acá es la regla de pertenencia — pero es la
+ * regla de la que depende que nadie reserve para dentro de tres minutos.
+ */
+describe('withinBookingWindow', () => {
+  const window = {
+    notBefore: new Date('2026-09-07T12:00:00.000Z'),
+    notAfter: new Date('2026-09-30T23:00:00.000Z'),
+  };
+
+  const slot = (start: string, end: string): Interval => ({
+    start: new Date(start),
+    end: new Date(end),
+  });
+
+  it('deja pasar el que está entero adentro', () => {
+    expect(
+      withinBookingWindow(
+        slot('2026-09-10T14:00:00.000Z', '2026-09-10T15:00:00.000Z'),
+        window,
+      ),
+    ).toBe(true);
+  });
+
+  it('los bordes cuentan como adentro', () => {
+    expect(
+      withinBookingWindow(
+        slot('2026-09-07T12:00:00.000Z', '2026-09-07T13:00:00.000Z'),
+        window,
+      ),
+    ).toBe(true);
+
+    expect(
+      withinBookingWindow(
+        slot('2026-09-30T22:00:00.000Z', '2026-09-30T23:00:00.000Z'),
+        window,
+      ),
+    ).toBe(true);
+  });
+
+  it('descarta el que arranca un minuto antes del piso', () => {
+    expect(
+      withinBookingWindow(
+        slot('2026-09-07T11:59:00.000Z', '2026-09-07T13:00:00.000Z'),
+        window,
+      ),
+    ).toBe(false);
+  });
+
+  /**
+   * El caso que justifica pedir el hueco **entero** y no solo su inicio: el
+   * turno arranca dentro del último día permitido y termina afuera. Lo que se
+   * compromete es todo el rato, no el instante de inicio.
+   */
+  it('descarta el que arranca adentro pero termina afuera', () => {
+    expect(
+      withinBookingWindow(
+        slot('2026-09-30T22:30:00.000Z', '2026-09-30T23:30:00.000Z'),
+        window,
+      ),
+    ).toBe(false);
   });
 });

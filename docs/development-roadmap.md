@@ -10,7 +10,7 @@
 
 > **Fases 0 a 6 cerradas, más los mails transaccionales.** El corazón del sistema está: turnos, disponibilidad, recurrencia, y ahora cobros —señas de turnos y la suscripción del negocio—. Los mails se adelantaron (estaban diferidos con deadline "antes de la Fase 7") porque su única deuda real —no poder recuperar una contraseña sin entrar a la base a mano— no convenía arrastrarla más.
 >
-> **La Fase 7 arrancó el 2026-09-01**: el portal ya se **ve** (negocio, sucursales, servicios, sin token) y las cinco decisiones de producto están tomadas. Falta la parte que **reserva**: disponibilidad recortada, el `POST`, los mails y la limpieza de los turnos abandonados.
+> **Fase 7 cerrada (2026-09-02).** Desde un navegador anónimo se ve el portal, se elige servicio, se ve la disponibilidad, se reserva y se paga la seña — y una reserva abandonada libera el hueco sola. Las cinco decisiones de producto quedaron escritas con su razón, no solo con su resultado.
 >
 > **Antes de la Fase 7 se cerró una tanda de deuda chica pedida por el front (2026-09-01).** El front cerró su roadmap y quedaron cuatro cosas del backend, las cuatro hechas: el tipo de ausencia (§2.3), el horario y las ausencias de todo el equipo en un pedido (§2.4), lo que **falta** cobrar de un mes (§6.6) y el choque de ids del sandbox (§6.7). Fueron primero porque era deuda concreta contra deuda hipotética.
 >
@@ -883,55 +883,61 @@ Endpoints públicos bajo `/public/:slug/...`.
 - **`@PublicTenant()` es `@Public()` + el marcador, en un solo decorador y a nivel controller.** Separarlos dejaría abierta la combinación "público y sin tenant", que es justo la que expondría datos de todos los negocios.
 - ⚠️ **El `deletedAt` del guard es lo único que tapa el catálogo de un negocio dado de baja.** La extension de soft delete filtra el borrado de *cada fila*, no el del negocio dueño: sin ese chequeo, `/services` y `/branches` de un negocio eliminado se siguen viendo enteros. El primer test que escribimos no lo detectaba —pegaba solo contra `GET /public/:slug`, donde el 404 sale igual por otro camino— y la mutación lo dejó al descubierto. Ahora recorre las tres rutas.
 
-### 7.3 Endpoints — los tres de lectura hechos
+### ✅ 7.3 Endpoints
 
 - ✅ `GET /public/:slug` — branding, `timezone`, `currency` y las reglas de reserva. El timezone **no es opcional**: sin él el portal pinta las horas mal. `booking` publica la ventana para que el calendario deshabilite los días que no van, en vez de dejar que el visitante se coma un 400.
 - ✅ `GET /public/:slug/branches` — **no estaba en el plan original y hacía falta**: para reservar hay que elegir sucursal. Solo las activas, con su horario de atención.
 - ✅ `GET /public/:slug/services` — activos **y** públicos, agrupados por categoría. Los sin categoría van al final en un grupo `"Otros"` con `id: null` y **no se esconden**: es un descuido de carga, y sacarlo del portal lo convierte en plata que no entra.
 - ✅ Throttle propio del portal (5/s, 60/min), más ajustado que el global porque acá el único costo de pedir es tener una IP.
 - ✅ 16 e2e, incluido el aislamiento entre negocios y que nada del panel se filtre en la respuesta.
-- `GET /public/:slug/availability?serviceIds=&branchId=&date=` — reusa el algoritmo de la Fase 5.3.1 **recortando** los slots pasados y la ventana de reserva.
-- `POST /public/:slug/appointments` — matchea el cliente por teléfono (o lo crea), agenda con `createdVia: PUBLIC_BOOKING`, y arranca el checkout si hay seña.
-- `GET`/`DELETE /public/:slug/appointments/:token` — solo si sale la decisión 5.
+- ✅ `GET /public/:slug/availability` — el mismo algoritmo de la Fase 5.3.1, recortado por la ventana. Un día fuera de la ventana devuelve `slots: []` y no un 400: el portal ya publica la ventana y puede deshabilitar esos días, y un error rompería una vista de mes entero.
+- ✅ `POST /public/:slug/appointments` — matchea el cliente por teléfono (o lo crea), agenda con `createdVia: PUBLIC_BOOKING` y `createdByUserId: null`, y arranca el checkout si hay seña. Throttle propio (3/min, 15/hora), mucho más duro que el de los `GET`: cada reserva **le ocupa un hueco al negocio**, y cincuenta reservas son cincuenta pedidos que el límite de lectura ni nota.
+- ✅ **La reserva se valida contra la disponibilidad real, no contra la ventana a mano.** El `POST` pide el mismo día que vería el portal y busca su `startsAt` entre los slots: así "está dentro de la ventana", "la sucursal abre", "alguien lo presta" y "el hueco está libre" salen de una sola fuente. De ahí sale también el profesional cuando no lo eligieron.
+- ✅ **"Cualquiera" es el que menos turnos tiene ese día**, con desempate por id. Tomar siempre el primero de la lista le daría todas las reservas web a quien ordene primero — un bug que el negocio ve en un día.
+- `GET`/`DELETE /public/:slug/appointments/:token` — no va, por la decisión 5.
 
-### 7.4 Qué hay que tocar del código que ya está
+### ✅ 7.4 Qué había que tocar del código que ya estaba
 
-- **`AppointmentsService.create` pide `createdByUserId: string` obligatorio** y el portal no tiene usuario. La columna ya es nullable; el método no.
-- **`AppointmentSource.PUBLIC_BOOKING` existe y todavía no lo usa nadie.**
-- **El recorte de slots**: decidir si vive en el endpoint público o adentro de `findAvailability` detrás de un flag. Si queda afuera son dos lugares que tienen que decir lo mismo, que es el error que ya nos costó un 409 con la duración de varios servicios.
+- **El recorte de slots vive adentro de `findAvailability`**, detrás de un parámetro opcional. Era la decisión abierta y se resolvió así porque la alternativa —una segunda implementación en el portal— es exactamente el error que ya nos costó un 409 con la duración de varios servicios: la disponibilidad que se ofrece tiene que ser la misma que después entra.
+- **El filtro se aplica sobre slots ya cortados, no recortando los ratos libres antes de cortarlos.** Recortando antes, un piso a las 10:20 haría arrancar la grilla a las 10:20 y el portal ofrecería horarios distintos a los del panel para el mismo día.
+- **`create` se partió en `book` privado + dos entradas**: `create` (mostrador) y `createFromPortal`. Lo que cambia entre las dos son tres cosas y ninguna es configurable: `createdByUserId` en `null` —la columna ya lo admitía, el método no—, `createdVia: PUBLIC_BOOKING` (el enum existía y no lo usaba nadie) y la política de seña.
+- **`DepositPolicy` (`'settings'` | `'always'`)** es el nombre de esa última diferencia. No son dos valores igual de válidos: el mostrador y el portal son situaciones distintas, y `requireDepositForBooking` describe la primera.
 
-### 7.5 Seguridad — la parte que el plan viejo subestimaba
+### ✅ 7.5 Seguridad — la parte que el plan viejo subestimaba
 
-Decía "throttling agresivo, ej. 30 req/min por IP". Eso es lo de menos.
+Decía "throttling agresivo, ej. 30 req/min por IP". Eso era lo de menos.
 
-- ⚠️ **Un `PENDING_PAYMENT` que nadie paga bloquea el hueco para siempre.** Está en `BLOCKING_STATUSES` y **no hay ningún job que lo limpie** — el único `@Cron` del repo es el vencimiento de suscripciones. Hoy no duele porque esos turnos los crea el mostrador y alguien los mira; con el portal abierto, cada reserva abandonada es un hueco muerto. **Se resuelve acá, no en la Fase 8.**
-- **Enumeración de clientes por teléfono.** Si el POST responde distinto según el número ya exista, cualquiera averigua quién es cliente del negocio. La respuesta tiene que ser la misma en los dos casos — mismo criterio que `POST /auth/forgot-password`.
-- **Spam de turnos.** Alguien reserva 50 turnos con teléfonos inventados y le llena la agenda al negocio. El throttle por IP no alcanza para esto.
-- **No filtrar datos internos**: el empleado no sale con email, el cliente no sale con `notes`.
-- **CORS**: estos endpoints los llama un browser desde el dominio del portal.
-- Throttling propio, más ajustado que el global (`short` 10/s, `long` 100/min), y **distinto para el POST que para los GET**.
+- ✅ **La limpieza de abandonados** (`AppointmentsService.releaseAbandoned` + `AppointmentsCron`, cada 10 minutos). Un `PENDING_PAYMENT` está en `BLOCKING_STATUSES`: ocupa al profesional igual que uno confirmado. Mientras los cargaba el mostrador no hacía falta limpiarlos —alguien los miraba—, pero con el portal abierto cada checkout abandonado es un hueco muerto del que nadie se entera. **Es lo que hace segura a la seña obligatoria de la decisión 3.**
+  - Solo toca `PUBLIC_BOOKING`: un `PENDING_PAYMENT` del panel puede estar esperando una transferencia, y cancelárselo solo sería peor que el hueco.
+  - Queda `CANCELED_BY_BUSINESS` con motivo, no borrado: la clienta puede haber recibido el mail, y que el turno desaparezca sin rastro convierte un reclamo en un misterio.
+  - El `status` va también en el `WHERE` del `updateMany`: es lo que resuelve la carrera contra el aviso del proveedor.
+  - Cada 10 minutos y no de madrugada como el vencimiento de suscripciones: lo que se libera es un hueco **de hoy**.
+- ✅ **Enumeración de clientes por teléfono.** La respuesta del `POST` es idéntica exista o no el número, y **no devuelve nada del cliente** —ni el nombre guardado en la ficha—. Mismo criterio que `POST /auth/forgot-password`. Además, una ficha existente **no se pisa** con lo que vino del formulario: el panel es la fuente de verdad de su propia clientela.
+- ✅ **Spam de turnos.** Throttle propio del `POST` (3/min, 15/hora) además del de los `GET`. **No alcanza solo** —las IPs son baratas— y por eso lo que de verdad limita el daño es la limpieza de arriba: un turno sin pagar dura media hora.
+- ✅ **No filtrar datos internos**: la respuesta pública trae nombre de sucursal, nombre del profesional y servicios. Nada de emails, notas ni ids internos de más.
+- **CORS**: pendiente de configurar el dominio del portal cuando exista. No es código nuevo, es una variable de entorno.
 
-### 7.6 Mails
+### ✅ 7.6 Mails
 
-Faltan dos plantillas; hoy solo hay reset de contraseña, verificación de email e invitación de empleado.
+- ✅ Confirmación a quien reservó, con el link de pago si falta la seña.
+- ✅ Aviso al negocio, **con el teléfono**: es para lo que se abre ese mail.
+- **Son dos plantillas y no una con dos destinatarios**: mandar el mismo texto sería o darle el teléfono de la clienta a ella misma, o no dárselo al negocio.
+- **El mail cambia entero según haya seña o no.** Con seña el asunto, el cuerpo y el botón dicen que el turno **todavía no está**; un texto único que dijera "reservado" y abajo "pagá la seña" deja a la mitad de la gente creyendo que ya lo tiene.
+- La hora se formatea **con la zona del negocio**, nunca con la del proceso: hay un test que lo fija comparando Buenos Aires contra Madrid.
 
-- Confirmación de reserva al cliente, con el link de pago si hay seña.
-- Aviso al negocio de que entró una reserva.
+### ✅ 7.7 Tests y contrato
 
-### 7.7 Tests y contrato
-
-- e2e completo **sin token**: ver el portal → servicios → disponibilidad → reservar → pagar.
-- Que el slug de un negocio no vea nada del otro.
-- Que una reserva pública no pueda pisar un turno existente.
-- Que la ventana de reserva se respete en las dos puntas.
-- `docs/frontend-context.md`, que es de donde sale la copia del front.
+- ✅ 25 e2e nuevos, todos sin token: ver el portal → disponibilidad → reservar → la seña → la limpieza.
+- ✅ 14 unitarios nuevos: la ventana de reserva (`withinBookingWindow`) y las dos plantillas de mail.
+- ✅ Verificado mutando, cinco veces: ignorar la ventana rompe 3 tests; hacer que el portal mire `requireDepositForBooking` rompe 3; sacarle el filtro por origen a la limpieza rompe el del mostrador; elegir siempre al primer profesional rompe el reparto; y sacarle al `POST` el chequeo de reservas apagadas rompe su 403.
+- ✅ `docs/frontend-context.md` actualizado (94 endpoints, el contrato del `POST` y los cinco códigos de error que puede devolver).
 
 ### Fuera de alcance, aunque tienten
 
 - **Login del cliente.** Esto es reserva anónima, no un portal con cuentas.
 - **Recordatorios automáticos.** Necesitan la cola de la Fase 8.
 
-**✅ Done cuando:** desde un browser anónimo podés ver el portal, elegir servicio, ver disponibilidad, reservar y pagar la seña — y una reserva abandonada libera el hueco sola.
+**✅ Hecho (2026-09-02):** desde un browser anónimo se ve el portal, se elige servicio, se ve la disponibilidad, se reserva y se paga la seña — y una reserva abandonada libera el hueco sola.
 
 ---
 

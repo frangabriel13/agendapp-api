@@ -34,6 +34,8 @@ import {
   mergeIntervals,
   splitIntoSlots,
   subtractIntervals,
+  withinBookingWindow,
+  type BookingWindow,
   type Interval,
 } from './availability';
 import {
@@ -111,6 +113,30 @@ const APPOINTMENT_SELECT = {
 type AppointmentRow = Prisma.AppointmentGetPayload<{
   select: typeof APPOINTMENT_SELECT;
 }>;
+
+/**
+ * Cuánto se le sostiene el hueco a una reserva pública sin pagar.
+ *
+ * Tiene que darle tiempo real a alguien a abrir el link, poner la tarjeta y
+ * volver —de ahí que no sean cinco minutos— y a la vez no dejar el hueco
+ * secuestrado media tarde por quien cerró la pestaña.
+ */
+export const ABANDONED_HOLD_MINUTES = 30;
+
+/** Queda escrito en el turno: es lo que va a leer quien pregunte qué pasó. */
+const ABANDONED_REASON =
+  'La reserva se hizo desde la web y no se pagó la seña a tiempo';
+
+/**
+ * Quién decide si un turno con seña nace esperando el pago.
+ *
+ * `'settings'` respeta `requireDepositForBooking`; `'always'` la ignora. No es
+ * una preferencia con dos valores igual de válidos: es que el mostrador y el
+ * portal público son situaciones distintas —enfrente hay una persona, online
+ * hay alguien que no perdió nada si no aparece— y la bandera del negocio
+ * describe la primera.
+ */
+type DepositPolicy = 'settings' | 'always';
 
 /**
  * Lo que un turno necesita y que no cambia con la fecha. Una serie lo calcula
@@ -195,14 +221,16 @@ export class AppointmentsService {
    * sin pasar por la zona del negocio da resultados que fallan justo el día que
    * cambia la hora.
    *
-   * No se filtran los slots que ya pasaron. El endpoint describe lo que el
-   * horario permite, no lo que todavía se puede reservar: para el mostrador un
-   * hueco de hace una hora sigue siendo información válida (alguien llegó sin
-   * turno), y el portal público (Fase 7) sí va a tener que recortarlos. Filtrar
-   * acá se lo sacaría a los dos.
+   * **Sin `window`, no se filtran los slots que ya pasaron.** El endpoint
+   * describe lo que el horario permite, no lo que todavía se puede reservar:
+   * para el mostrador un hueco de hace una hora sigue siendo información válida
+   * (alguien llegó sin turno). El portal público sí necesita el recorte, y lo
+   * pide pasando la ventana — un parámetro opcional y no dos algoritmos, porque
+   * la disponibilidad que se ofrece tiene que ser la misma que después entra.
    */
   async findAvailability(
     query: AvailabilityQueryDto,
+    window?: BookingWindow,
   ): Promise<AvailabilityResponseDto> {
     const timezone = await this.tenantTimezone();
 
@@ -313,9 +341,21 @@ export class AppointmentsService {
       }
     }
 
-    const slots = [...byStart.values()].sort(
-      (a, b) => a.startsAt.getTime() - b.startsAt.getTime(),
-    );
+    // El recorte de la ventana pasa **acá y no adentro de `findAvailability`
+    // del portal**, que es la decisión de la §7.4: el cálculo de huecos vive en
+    // un solo lugar y el portal solo le agrega un filtro. Dos implementaciones
+    // del mismo algoritmo son las que terminan ofreciendo un horario que
+    // después rebota con 409.
+    const slots = [...byStart.values()]
+      .filter(
+        (slot) =>
+          window === undefined ||
+          withinBookingWindow(
+            { start: slot.startsAt, end: slot.endsAt },
+            window,
+          ),
+      )
+      .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
 
     return {
       ...base,
@@ -340,9 +380,109 @@ export class AppointmentsService {
    * en READ COMMITTED cada consulta ve su propio snapshot. Se hace afuera, que
    * es más simple y no promete una protección que no da.)
    */
-  async create(
+  create(
     dto: CreateAppointmentDto,
     createdByUserId: string,
+  ): Promise<AppointmentResponseDto> {
+    return this.book(dto, {
+      createdByUserId,
+      createdVia: AppointmentSource.ADMIN,
+      depositPolicy: 'settings',
+    });
+  }
+
+  /**
+   * Agenda un turno pedido desde el portal público.
+   *
+   * Es el mismo alta —mismas validaciones, mismo EXCLUDE constraint— con dos
+   * diferencias que **no** son configurables:
+   *
+   * 1. **No hay usuario que lo haya creado.** `createdByUserId` queda en `null`,
+   *    que la columna ya admitía: quien reservó no tiene cuenta. Lo que dice de
+   *    dónde vino es `createdVia: PUBLIC_BOOKING`.
+   * 2. **La seña se espera siempre que exista** (`depositPolicy: 'always'`), sin
+   *    mirar `requireDepositForBooking`. Esa bandera gobierna el mostrador,
+   *    donde la clienta está enfrente y el negocio decide; acá un desconocido
+   *    que reserva sin poner plata no tiene ningún costo por no aparecer.
+   *
+   * ⚠️ La consecuencia de (2) es que estos turnos nacen en `PENDING_PAYMENT`,
+   * que **bloquea el hueco**. Por eso existe `releaseAbandoned`: sin esa
+   * limpieza, cada checkout abandonado sería un hueco muerto para siempre.
+   */
+  createFromPortal(dto: CreateAppointmentDto): Promise<AppointmentResponseDto> {
+    return this.book(dto, {
+      createdByUserId: null,
+      createdVia: AppointmentSource.PUBLIC_BOOKING,
+      depositPolicy: 'always',
+    });
+  }
+
+  /**
+   * Suelta los huecos de las reservas públicas que nadie pagó.
+   *
+   * **Esto es lo que hace segura a la seña obligatoria del portal.** Un turno
+   * en `PENDING_PAYMENT` está en `BLOCKING_STATUSES`: ocupa al profesional
+   * exactamente igual que uno confirmado. Mientras esos turnos los cargaba el
+   * mostrador no hacía falta limpiarlos —alguien los estaba mirando—, pero con
+   * el portal abierto cada checkout que se abandona es un hueco muerto, y
+   * nadie del negocio se entera de que existe.
+   *
+   * Tres decisiones que valen la pena:
+   *
+   * - **Solo toca `PUBLIC_BOOKING`.** Un `PENDING_PAYMENT` cargado desde el
+   *   panel es una decisión de alguien que trabaja ahí y puede estar esperando
+   *   una transferencia; cancelárselo solo sería peor que el hueco.
+   * - **Queda `CANCELED_BY_BUSINESS` con motivo, no borrado.** El turno pasó a
+   *   existir y la clienta puede haber recibido el mail; que desaparezca sin
+   *   rastro convierte un reclamo en un misterio. Es una transición legal desde
+   *   `PENDING_PAYMENT` (ver `status-machine.ts`).
+   * - **El `status` va también en el `WHERE` del update.** Es lo que resuelve
+   *   la carrera contra el aviso del proveedor: si el pago se acredita justo
+   *   mientras esto corre, el turno ya no está en `PENDING_PAYMENT` y el
+   *   `updateMany` no lo toca. Al revés —confirmar un turno que acabamos de
+   *   cancelar— tampoco pasa, porque el webhook valida el estado.
+   *
+   * Corre **sin tenant**: barre todos los negocios, así que usa el cliente base
+   * y filtra los borrados a mano.
+   */
+  async releaseAbandoned(now = new Date()): Promise<number> {
+    const deadline = new Date(
+      now.getTime() - ABANDONED_HOLD_MINUTES * 60 * 1_000,
+    );
+
+    return this.tenantContext.runWithoutTenant(async () => {
+      const { count } = await this.prisma.appointment.updateMany({
+        where: {
+          status: AppointmentStatus.PENDING_PAYMENT,
+          createdVia: AppointmentSource.PUBLIC_BOOKING,
+          createdAt: { lt: deadline },
+          // Redundante con el estado —una seña acreditada ya lo habría
+          // confirmado— y a propósito: si alguna vez las dos cosas se
+          // desincronizan, el error que queremos es "quedó un hueco tomado",
+          // no "le cancelamos el turno a alguien que pagó".
+          depositPaid: false,
+          deletedAt: null,
+          tenant: { deletedAt: null },
+        },
+        data: {
+          status: AppointmentStatus.CANCELED_BY_BUSINESS,
+          canceledAt: now,
+          cancellationReason: ABANDONED_REASON,
+        },
+      });
+
+      return count;
+    });
+  }
+
+  /** El alta de verdad. Lo que cambia entre el mostrador y el portal es `meta`. */
+  private async book(
+    dto: CreateAppointmentDto,
+    meta: {
+      createdByUserId: string | null;
+      createdVia: AppointmentSource;
+      depositPolicy: DepositPolicy;
+    },
   ): Promise<AppointmentResponseDto> {
     const timezone = await this.tenantTimezone();
     const services = await this.loadServices(dto.serviceIds);
@@ -366,10 +506,15 @@ export class AppointmentsService {
       timezone,
     });
 
-    const plan = await this.bookingPlan(dto, services, totals);
+    const plan = await this.bookingPlan(
+      dto,
+      services,
+      totals,
+      meta.depositPolicy,
+    );
     const id = await this.insertAppointment(plan, startsAt, endsAt, {
-      createdByUserId,
-      createdVia: AppointmentSource.ADMIN,
+      createdByUserId: meta.createdByUserId,
+      createdVia: meta.createdVia,
       notes: dto.notes ?? null,
     });
 
@@ -482,6 +627,7 @@ export class AppointmentsService {
     dto: CreateAppointmentDto,
     services: ServiceSnapshot[],
     totals: ReturnType<typeof totalsOf>,
+    depositPolicy: DepositPolicy = 'settings',
   ): Promise<BookingPlan> {
     await this.assertEmployeeCanPerform(
       dto.employeeId,
@@ -497,7 +643,7 @@ export class AppointmentsService {
       serviceIds: dto.serviceIds,
       services,
       totals,
-      status: await this.initialStatus(totals.depositCents),
+      status: await this.initialStatus(totals.depositCents, depositPolicy),
       resourceIds: await this.requiredResourceIds(dto.serviceIds, dto.branchId),
       timezone: await this.tenantTimezone(),
     };
@@ -509,7 +655,8 @@ export class AppointmentsService {
     startsAt: Date,
     endsAt: Date,
     meta: {
-      createdByUserId: string;
+      /** `null` cuando reservó alguien sin cuenta: el portal público. */
+      createdByUserId: string | null;
       createdVia: AppointmentSource;
       notes: string | null;
       recurrenceGroupId?: string;
@@ -1060,16 +1207,25 @@ export class AppointmentsService {
   /**
    * Con qué estado nace el turno.
    *
-   * `requireDepositForBooking` es lo que decide: con la bandera prendida el
-   * turno queda esperando el pago de la seña; apagada, se confirma de una y la
-   * seña (si la hay) se cobra cuando se cobra. Sin monto que cobrar no hay nada
-   * que esperar, así que ahí siempre se confirma.
+   * Sin monto que cobrar no hay nada que esperar: siempre `CONFIRMED`. Con
+   * seña, decide `policy`:
+   *
+   * - `'settings'` mira `requireDepositForBooking`. Es el mostrador: con la
+   *   bandera apagada el turno se confirma de una y la seña se cobra cuando se
+   *   cobra, porque el negocio tiene a la persona enfrente.
+   * - `'always'` deja el turno esperando el pago pase lo que pase. Es el
+   *   portal público, donde no hay nadie enfrente.
    */
   private async initialStatus(
     depositCents: number | null,
+    policy: DepositPolicy,
   ): Promise<AppointmentStatus> {
     if (depositCents === null || depositCents <= 0) {
       return AppointmentStatus.CONFIRMED;
+    }
+
+    if (policy === 'always') {
+      return AppointmentStatus.PENDING_PAYMENT;
     }
 
     const settings = await this.tenantSettings();
