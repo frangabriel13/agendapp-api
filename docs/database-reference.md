@@ -732,6 +732,13 @@ cambiar de proveedor.
 ### `notes`
 Notas polimórficas: pueden ser sobre customer, appointment, employee, branch o generales.
 
+> **Implementada (Fase 8.1).** Dos cosas que el modelo de arriba no dice y la
+> tabla sí: hay un CHECK que ata `entity_type = 'general'` con `entity_id IS
+> NULL` (y al revés), y otro que rechaza contenido en blanco. Ninguno de los dos
+> lo representa Prisma, así que **viven solo en el SQL de la migración**.
+> `is_private` es una regla de autorización que aplica `NotesService` en el
+> `WHERE`: la nota privada ajena no se filtra al armar la respuesta, no se trae.
+
 | Campo | Tipo | Notas |
 |---|---|---|
 | `id` | UUID | PK |
