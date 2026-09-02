@@ -793,6 +793,21 @@ existe). La ven su autor y el dueño del negocio, nadie más.
 Editar y borrar es del autor o del dueño; cualquier otro recibe **403**. Lo que
 no se edita nunca es el destino: una nota que cambia de entidad es otra nota.
 
+### Recordatorios de turno (Fase 8)
+
+**No hay endpoint y no hay nada que cablear** — está acá porque cambia lo que la
+clientela recibe y conviene que la copia de la app lo diga.
+
+El sistema manda dos avisos previos por mail: uno **entre 24 y 2 horas antes** y
+otro **en las últimas 2 horas**. Van solo a quien dejó email, solo para turnos
+**confirmados** (uno esperando la seña no se recuerda: se libera solo si nadie
+paga), y no para algo agendado hace menos de una hora — la confirmación ya salió.
+
+Lo que sí conviene reflejar en el front: si el negocio pone
+`cancellationPolicyHours`, el recordatorio lo menciona. Y el teléfono que
+aparece para avisar una cancelación es **el de la sucursal**, así que una
+sucursal sin teléfono cargado deja el mail sin a dónde llamar.
+
 ### Auditoría (Fase 8)
 
 `GET /audit-logs`, **solo `OWNER`** — cualquier otro rol recibe 403. No es una

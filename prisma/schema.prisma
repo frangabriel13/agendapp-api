@@ -253,8 +253,9 @@ model Tenant {
   appointmentPayments  AppointmentPayment[]
   subscriptionPayments SubscriptionPayment[]
 
-  notes     Note[]
-  auditLogs AuditLog[]
+  notes                Note[]
+  auditLogs            AuditLog[]
+  appointmentReminders AppointmentReminder[]
 
   @@index([planId])
   @@map("tenants")
@@ -855,6 +856,7 @@ model Appointment {
   services  AppointmentService[]
   resources AppointmentResource[]
   payments  AppointmentPayment[]
+  reminders AppointmentReminder[]
 
   @@index([tenantId, startsAt])
   @@index([employeeId, startsAt])
@@ -1181,4 +1183,53 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([userId, createdAt])
   @@map("audit_logs")
+}
+
+/// Cuál de los dos avisos previos al turno.
+///
+/// Los nombres dicen *cuándo*, no cuántas horas: la cantidad vive en
+/// `REMINDER_WINDOWS` (TypeScript) y cambiarla no debería costar una migración.
+enum ReminderKind {
+  /// El de la víspera.
+  DAY_BEFORE @map("day_before")
+
+  /// El de un rato antes, el que llega a quien ya salió de la casa.
+  HOURS_BEFORE @map("hours_before")
+
+  @@map("reminder_kind")
+}
+
+/// Que un recordatorio de un turno ya está resuelto.
+///
+/// ⚠️ **El UNIQUE `(appointment_id, kind)` no es un índice de consulta: es el
+/// mecanismo.** El job inserta la fila *antes* de mandar el mail, así que con
+/// tres réplicas barriendo a la vez gana una sola y las otras chocan contra el
+/// unique y siguen de largo. Es la misma idea que `mp_payment_id` con el
+/// webhook de Mercado Pago: la unicidad la garantiza la base, no el código.
+///
+/// **La fila significa "resuelto", no "entregado".** Si la clienta no dejó
+/// mail, se escribe igual con `sentTo` en `null` — que no haya a dónde mandarlo
+/// no es un error, y sin la fila el job lo reintentaría cada cuarto de hora
+/// para siempre. Que el mail haya llegado es problema de `MailService`, como en
+/// todo el resto del sistema.
+///
+/// Append-only: sin `deletedAt` y sin updates. Está en
+/// `SOFT_DELETE_EXEMPT_MODELS`.
+model AppointmentReminder {
+  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String       @map("tenant_id") @db.Uuid
+  appointmentId String       @map("appointment_id") @db.Uuid
+  kind          ReminderKind
+
+  /// A dónde salió. `null` = no había casilla a la cual mandarlo.
+  sentTo String? @map("sent_to") @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  @@unique([appointmentId, kind])
+  @@index([tenantId, createdAt])
+  @@map("appointment_reminders")
 }

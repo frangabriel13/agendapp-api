@@ -757,6 +757,30 @@ Notas polimórficas: pueden ser sobre customer, appointment, employee, branch o 
 
 ---
 
+### `appointment_reminders`
+
+> **Nueva en la Fase 8.3**, no estaba en el modelo conceptual.
+
+Que un aviso previo a un turno ya está resuelto. Append-only (sin `deleted_at`,
+en `SOFT_DELETE_EXEMPT_MODELS`).
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| `id` | UUID | PK |
+| `tenant_id` | UUID | FK → tenants |
+| `appointment_id` | UUID | FK → appointments |
+| `kind` | ENUM | `day_before`, `hours_before` |
+| `sent_to` | VARCHAR(255) | nullable: `null` = no había casilla |
+| `created_at` | TIMESTAMP | |
+
+**Índices:**
+- `UNIQUE(appointment_id, kind)` — ⚠️ **no es un índice de consulta: es lo que
+  impide que tres réplicas manden tres mails.** El job inserta la fila antes de
+  mandar el mail; el que pierde la carrera choca acá y sigue de largo.
+- `INDEX(tenant_id, created_at)`
+
+---
+
 ## 📊 11. Auditoría
 
 ### `audit_logs`

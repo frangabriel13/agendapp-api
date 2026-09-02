@@ -17,6 +17,7 @@ import {
 } from './common/tenant-context';
 import { AuditInterceptor, AuditModule } from './common/audit';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { JobsModule } from './common/jobs';
 import { ActiveSubscriptionGuard } from './common/guards/active-subscription.guard';
 import { PublicTenantGuard } from './common/guards/public-tenant.guard';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -87,6 +88,7 @@ import type { Env } from './config/env.schema';
     PrismaModule,
     MailModule,
     AuditModule,
+    JobsModule,
     AuthModule,
     HealthModule,
     TenantsModule,

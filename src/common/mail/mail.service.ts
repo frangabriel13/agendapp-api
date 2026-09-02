@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { MAIL_PROVIDER, type MailProvider } from './mail.types';
 import {
+  appointmentReminderMail,
   bookingConfirmationMail,
   bookingNoticeMail,
   type BookingMailAppointment,
@@ -88,6 +89,18 @@ export class MailService {
     awaitingDeposit: boolean;
   }): Promise<boolean> {
     return this.deliver(params.to, bookingNoticeMail(params));
+  }
+
+  /** El aviso previo al turno: el de la víspera y el de un rato antes. */
+  sendAppointmentReminder(params: {
+    to: string;
+    firstName: string;
+    appointment: BookingMailAppointment;
+    imminent: boolean;
+    cancellationPolicyHours: number;
+    businessPhone: string | null;
+  }): Promise<boolean> {
+    return this.deliver(params.to, appointmentReminderMail(params));
   }
 
   /**
