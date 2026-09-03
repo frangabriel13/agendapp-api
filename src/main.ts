@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { shouldExposeDocs } from './common/security/security-headers';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import type { Env } from './config/env.schema';
@@ -38,14 +39,21 @@ async function bootstrap(): Promise<void> {
     exposedHeaders: RATE_LIMIT_HEADERS,
   });
 
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle('AgendApp API')
-    .setDescription('Backend del SaaS multi-tenant de gestión de turnos.')
-    .setVersion('0.1.0')
-    .addBearerAuth()
-    .build();
-  const document = SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup('api', app, document);
+  // En producción no se publica: la documentación interactiva es el mapa
+  // completo de la API —cada ruta, cada campo, cada regla de validación— y eso
+  // es trabajo de reconocimiento que no hay por qué regalar. La decisión vive
+  // en `shouldExposeDocs` y no en un `if` acá para que tenga un test: el
+  // bootstrap no lo ejecuta ninguno.
+  if (shouldExposeDocs(config.get('NODE_ENV', { infer: true }))) {
+    const swaggerConfig = new DocumentBuilder()
+      .setTitle('AgendApp API')
+      .setDescription('Backend del SaaS multi-tenant de gestión de turnos.')
+      .setVersion('0.1.0')
+      .addBearerAuth()
+      .build();
+    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup('api', app, document);
+  }
 
   const port = config.get('PORT', { infer: true });
   await app.listen(port);

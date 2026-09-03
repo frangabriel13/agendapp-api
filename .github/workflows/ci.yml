@@ -1,0 +1,125 @@
+name: CI
+
+# `push` solo en las ramas de integración y `pull_request` para el resto: con
+# `push` en todas, cada rama con PR abierto correría la suite dos veces por
+# commit, y la e2e tarda varios minutos.
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+# Un push nuevo sobre la misma rama cancela la corrida anterior: lo que importa
+# es el estado del último commit, no el historial de los intermedios.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # La misma que usa el dev local, para que un fallo de CI se pueda reproducir
+  # sin adivinar la versión.
+  NODE_VERSION: '24'
+
+jobs:
+  # Lo rápido y sin dependencias: si esto falla, no vale la pena levantar una
+  # base para enterarse de lo mismo cinco minutos después.
+  check:
+    name: Lint, tipos, unitarios y build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      # `migrate dev` NO regenera el cliente en este setup (Prisma 7 + driver
+      # adapters), así que sin esto los modelos no existen en los tipos y todo
+      # lo que sigue falla a compilar.
+      - name: Generar el cliente de Prisma
+        run: npx prisma generate
+
+      # Sin `--fix`, a diferencia de `npm run lint`: en CI queremos que la
+      # deriva se vea, no que se arregle sola y pase en verde.
+      - name: Lint
+        run: npm run lint:check
+
+      - name: Tipos
+        run: npm run typecheck
+
+      - name: Tests unitarios
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  e2e:
+    name: e2e contra Postgres real
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # La misma imagen que el docker-compose del repo: las migraciones usan
+        # constraints EXCLUDE, índices parciales y RLS, y no da lo mismo la
+        # versión.
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agendapp
+          POSTGRES_PASSWORD: agendapp_ci
+          POSTGRES_DB: agendapp
+        ports:
+          - 5432:5432
+        # Sin esto los tests arrancan antes de que Postgres acepte conexiones.
+        options: >-
+          --health-cmd "pg_isready -U agendapp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://agendapp:agendapp_ci@localhost:5432/agendapp?schema=public
+      # Mínimo 32 caracteres: lo exige `envSchema` al arrancar la app.
+      JWT_SECRET: ci-secret-que-no-protege-nada-pero-mide-mas-de-32
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Generar el cliente de Prisma
+        run: npx prisma generate
+
+      # `global-setup.ts` se encarga del resto: crea la base `_test`, le aplica
+      # `migrate deploy`, corre el seed de planes y crea el rol restringido con
+      # el que corre la app. Ese rol es lo que hace que RLS realmente corte
+      # durante los tests: con el dueño de las tablas, las políticas están
+      # puestas y no cortan nada.
+      - name: Tests e2e
+        run: npm run test:e2e
+
+  # No bloquea: `npm audit` reporta vulnerabilidades de dependencias
+  # transitivas que muchas veces no tienen arreglo disponible, y un CI que está
+  # rojo por algo que no podés arreglar deja de mirarse. Queda como aviso.
+  audit:
+    name: Vulnerabilidades de dependencias (aviso)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm audit --audit-level=high

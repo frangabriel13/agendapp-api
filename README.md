@@ -397,6 +397,28 @@ npm run start:dev
 
 ---
 
+## Integración continua
+
+`.github/workflows/ci.yml` corre en cada push a `main`/`develop` y en cada pull
+request:
+
+| Job | Qué hace |
+|---|---|
+| `check` | Lint, tipos, unitarios y build. Sin servicios, así que falla rápido |
+| `e2e` | La suite completa contra un Postgres 16 real, con RLS activo |
+| `audit` | `npm audit`, **sin bloquear** (ver abajo) |
+
+**El lint de CI no es `npm run lint`.** Ese lleva `--fix`: arregla y sale en
+verde, que es justo lo que no querés de un CI. Para chequear va
+`npm run lint:check`, sin `--fix`.
+
+**El `audit` no bloquea a propósito.** Hoy reporta vulnerabilidades transitivas
+de `prisma` cuyo único "arreglo" es bajar a Prisma 6, que es un cambio
+incompatible. Un CI rojo por algo que no se puede arreglar deja de mirarse.
+Queda como aviso para revisar de tanto en tanto.
+
+---
+
 ## Aislamiento entre negocios (RLS)
 
 Cada negocio ve solo lo suyo, y eso está defendido **dos veces**:
