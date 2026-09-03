@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { ThrottlerGuard } from '@nestjs/throttler';
+import {
+  ThrottlerGuard,
+  ThrottlerStorage,
+  type ThrottlerStorageService,
+} from '@nestjs/throttler';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import { AppModule } from '../../src/app.module';
@@ -29,19 +33,34 @@ export interface E2EContext {
 /** Contraseña válida según las reglas del DTO (8+, con letra y número). */
 export const TEST_PASSWORD = 'Password123!';
 
+export interface TestAppOptions {
+  /**
+   * Dejar el rate limiting **prendido**.
+   *
+   * Solo lo usa `throttling.e2e-spec.ts`. En cualquier otro archivo tiene que
+   * quedar apagado: los tests hacen decenas de registros y logins por minuto y
+   * el límite real de `/auth/login` es de 5, así que la suite se caería sola
+   * por un motivo que no tiene nada que ver con lo que está probando.
+   */
+  throttling?: boolean;
+}
+
 /**
  * Levanta la app real: mismos módulos, mismo `ValidationPipe`, mismo filtro de
  * excepciones y los mismos guards globales que en producción (por eso el pipe y
  * el filtro se registran en `AppModule` y no en `main.ts`).
  *
- * Se desactivan dos cosas. El rate limiting: los tests hacen decenas de
- * registros y logins por minuto y el límite real es de 5 (que el throttler
- * funcione se prueba aparte, Fase 9). Y el envío de mails, que se reemplaza por
- * una casilla en memoria — de ahí salen los tokens de reset y verificación, que
- * en la base están hasheados y no se pueden leer.
+ * Se desactivan dos cosas. El rate limiting, salvo que se pida lo contrario con
+ * `{ throttling: true }`. Y el envío de mails, que se reemplaza por una casilla
+ * en memoria — de ahí salen los tokens de reset y verificación, que en la base
+ * están hasheados y no se pueden leer.
  */
-export async function createTestApp(): Promise<E2EContext> {
-  jest.spyOn(ThrottlerGuard.prototype, 'canActivate').mockResolvedValue(true);
+export async function createTestApp(
+  options: TestAppOptions = {},
+): Promise<E2EContext> {
+  if (!options.throttling) {
+    jest.spyOn(ThrottlerGuard.prototype, 'canActivate').mockResolvedValue(true);
+  }
 
   const mail = new RecordingMailProvider();
 
@@ -61,6 +80,30 @@ export async function createTestApp(): Promise<E2EContext> {
     mail,
     payments: app.get<SandboxPaymentProvider>(PAYMENT_PROVIDER),
   };
+}
+
+/**
+ * Pone en cero los contadores de rate limit.
+ *
+ * Solo hace falta con `{ throttling: true }`, y ahí es imprescindible: el
+ * tracker es la IP, y en los tests **todos los pedidos vienen de la misma**.
+ * Sin esto, lo que gasta el armado de un test (registrar el negocio, invitar al
+ * empleado) se le descuenta al siguiente, y el archivo empieza a fallar por el
+ * orden en que corren los tests en vez de por lo que prueban.
+ *
+ * ⚠️ **Los timers van antes que el Map, y no al revés.** Cada pedido programa
+ * un `setTimeout` que al vencer entra a descontar el hit leyendo su fila del
+ * storage; vaciando el Map primero, esos timers se despiertan sobre una fila
+ * que ya no está y revientan con `Cannot destructure property 'totalHits'`
+ * —desde un timer, o sea lejísimos del test que lo causó—. `onApplicationShutdown`
+ * es lo que los cancela: se llama por su efecto, no porque acá haya un
+ * apagado.
+ */
+export function resetThrottling(app: TestApp): void {
+  const storage = app.get<ThrottlerStorageService>(ThrottlerStorage);
+
+  storage.onApplicationShutdown();
+  storage.storage.clear();
 }
 
 /**

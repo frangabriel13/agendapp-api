@@ -218,7 +218,7 @@ campos base están siempre; los extra se documentan en el endpoint que los usa.
 | 403 | El rol no alcanza. Reintentar no sirve. |
 | 404 | No existe, o pertenece a otro tenant (son indistinguibles a propósito). |
 | 409 | Conflicto: nombre duplicado, solapamiento de horario, teléfono de cliente repetido. |
-| 429 | Rate limit. Ver `Retry-After`. |
+| 429 | Rate limit. Ver `Retry-After-short` / `Retry-After-long`. |
 
 ---
 
@@ -259,10 +259,23 @@ Headers expuestos por CORS y legibles desde el navegador:
 ```
 X-RateLimit-Limit-short      X-RateLimit-Remaining-short      X-RateLimit-Reset-short
 X-RateLimit-Limit-long       X-RateLimit-Remaining-long       X-RateLimit-Reset-long
-Retry-After
+Retry-After-short            Retry-After-long
 ```
 
-Notar el sufijo `-short` / `-long`: no existe un `X-RateLimit-Limit` pelado.
+Notar el sufijo `-short` / `-long`: **no existe un `X-RateLimit-Limit` pelado, y
+tampoco un `Retry-After` pelado.** Este último estuvo mal documentado hasta
+ahora: la API declaraba exponer `Retry-After` a secas, que nunca se emite, así
+que el header con el tiempo de espera real llegaba al navegador y el JavaScript
+no lo podía leer. Si el front tenía un `response.headers.get('Retry-After')`,
+hay que cambiarlo por `Retry-After-short`.
+
+`Retry-After-*` solo viaja en las respuestas **429**; los `X-RateLimit-*` van en
+todas.
+
+El límite del **`POST` de reserva del portal público** es aparte y mucho más
+duro: **3 por minuto y 15 por hora**. Cada reserva le ocupa un hueco al negocio,
+así que el techo de lectura no alcanza. Leer el portal (`GET /public/:slug` y
+`/availability`) tiene el suyo, más holgado: 5 por segundo y 60 por minuto.
 
 ---
 
@@ -493,9 +506,9 @@ anterior y termina dentro del rango también viene.
 | el resto | nada: son finales |
 
 Una transición inválida da **409**, no 400. Al cancelar, la respuesta trae
-`refund` con qué corresponde devolver según la política del negocio — **no mueve
-plata**, eso llega con los pagos (Fase 6), pero sirve para decirle algo concreto
-a la clienta en el momento:
+`refund` con qué corresponde devolver según la política del negocio. **No mueve
+plata**: dice cuánto corresponde, y devolverla es un paso aparte (ver abajo).
+Sirve para decirle algo concreto a la clienta en el momento:
 
 ```jsonc
 {
@@ -506,6 +519,27 @@ a la clienta en el momento:
 ```
 
 `refund` es `null` en los cambios que no son cancelación.
+
+**Cómo se cierra el círculo.** El monto que dice `refund.amountCents` se asienta
+con `POST /appointments/:id/payments/manual` mandando `paymentType: "REFUND"`, y
+ahí sí el saldo del turno baja. Tres cosas a tener en cuenta:
+
+- **Un turno cancelado acepta la devolución, pero no un cobro nuevo.** Cualquier
+  otro `paymentType` sobre un turno cancelado o reprogramado da 409.
+- **Si `amountCents` es 0, no hay nada que registrar.** El monto mínimo de un
+  pago es 1, así que intentarlo da 400. Mirar el número antes de mandar.
+- `type: "CREDIT"` significa que la seña queda **a favor** para un próximo
+  turno: no sale plata, así que tampoco se registra una devolución.
+
+⚠️ Dos comportamientos que conviene conocer porque sorprenden:
+
+1. **La ventana de anticipación se aplica cancele quien cancele.** Si el negocio
+   cancela sobre la hora, `withinPolicy` da `false` y a la clienta no le
+   corresponde devolución — por una decisión que no fue suya. Está así hoy; si
+   se cambia, avisamos.
+2. **La devolución se calcula siempre sobre la seña**, aun si se pagó el turno
+   entero por adelantado. Quien pagó $100.000 y cancela en término recibe los
+   $30.000 de la seña; el resto se devuelve a mano si corresponde.
 
 **Reprogramar crea un turno nuevo.**
 `POST /appointments/:id/reschedule` devuelve **el turno nuevo** (201). El viejo
@@ -562,7 +596,9 @@ online (400): una devolución se registra a mano.
 **Los pagos en efectivo van por `POST .../payments/manual`** y nacen
 acreditados. `paymentMethod` acepta `CASH`, `TRANSFER` u `OTHER` — mandar
 `MERCADOPAGO` da 400, porque ese pago lo crea el checkout. `paymentType` sí
-acepta `REFUND`: así se registra la plata que se devolvió en el mostrador.
+acepta `REFUND`: así se registra la plata que se devolvió en el mostrador — y es
+**el único tipo que un turno cancelado sigue aceptando**, porque devolver es
+justamente lo que pasa después de cancelar.
 
 **En desarrollo no se cobra nada.** El backend arranca con
 `PAYMENT_PROVIDER=sandbox`: el `checkoutUrl` que devuelve apunta a

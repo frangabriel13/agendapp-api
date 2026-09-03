@@ -18,12 +18,16 @@ export const THROTTLERS = [
  * `-long`. Escribirlos a mano es garantía de que queden mal el día que se
  * agregue o renombre un límite — y el síntoma sería mudo: el header viaja, pero
  * el navegador no se lo deja leer al JavaScript.
+ *
+ * ⚠️ **`Retry-After` también lleva sufijo**, y acá estuvo escrito a secas hasta
+ * que un e2e lo miró: el header que sale en un 429 es `Retry-After-short`, así
+ * que la lista exponía uno que no existe y escondía el que sí. El front veía el
+ * rechazo y no podía saber en cuánto reintentar — que es la única información
+ * accionable de un 429.
  */
-export const RATE_LIMIT_HEADERS = [
-  ...THROTTLERS.flatMap(({ name }) => [
-    `X-RateLimit-Limit-${name}`,
-    `X-RateLimit-Remaining-${name}`,
-    `X-RateLimit-Reset-${name}`,
-  ]),
-  'Retry-After',
-];
+export const RATE_LIMIT_HEADERS = THROTTLERS.flatMap(({ name }) => [
+  `X-RateLimit-Limit-${name}`,
+  `X-RateLimit-Remaining-${name}`,
+  `X-RateLimit-Reset-${name}`,
+  `Retry-After-${name}`,
+]);
