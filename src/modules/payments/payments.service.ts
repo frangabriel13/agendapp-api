@@ -390,7 +390,14 @@ export class PaymentsService {
   ): Promise<PaymentResponseDto> {
     const appointment = await this.findAppointmentOrFail(appointmentId);
 
-    this.assertChargeable(appointment);
+    // Una devolución es lo que pasa **después** de cancelar, así que no puede
+    // caer bajo la misma regla que un cobro. Bloqueándola, la API calculaba
+    // cuánto correspondía devolver (`refund` en la respuesta de la cancelación)
+    // y después se negaba a asentarlo: la plata volvía por el mostrador y no
+    // quedaba registrada en ningún lado.
+    if (dto.paymentType !== AppointmentPaymentType.REFUND) {
+      this.assertChargeable(appointment);
+    }
 
     const currency = await this.tenantCurrency();
 
@@ -704,7 +711,12 @@ export class PaymentsService {
     };
   }
 
-  /** Un turno cancelado o reprogramado ya no admite movimientos de plata. */
+  /**
+   * Un turno cancelado o reprogramado ya no admite que le **entre** plata.
+   *
+   * Ojo con el nombre: es "cobrable", no "movible". Las devoluciones quedan
+   * afuera de esta regla a propósito y su caller las saltea — ver `recordManual`.
+   */
   private assertChargeable(appointment: ChargeableAppointment): void {
     if (
       isCanceled(appointment.status) ||

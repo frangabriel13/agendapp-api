@@ -330,7 +330,7 @@ contra Postgres de verdad.
 
 - **Base dedicada `agendapp_test`**, hermana de la de desarrollo en el mismo Postgres. `test/global-setup.ts` la crea si no existe, corre `prisma migrate deploy` y el seed de planes. Se puede apuntar a otra con `E2E_DATABASE_URL` (CI). Los tests truncan todo entre casos menos `plans`, descubriendo las tablas solas — no hay lista que mantener.
 - `test/utils/e2e-app.ts` levanta la app **con los mismos guards, pipe y filtro que producción** y expone `registerTenant()` para armar un negocio en una línea.
-- Lo único que se desactiva es el rate limiting (el límite real de 5/min haría fallar los tests por ruido, no por bugs). Probar el throttler queda para la Fase 9.
+- Lo único que se desactiva es el rate limiting (el límite real de 5/min haría fallar los tests por ruido, no por bugs). Se puede volver a prender por archivo con `createTestApp({ throttling: true })`, que es lo que hace `throttling.e2e-spec.ts` desde la Fase 9.1.
 - `maxWorkers: 1` en `test/jest-e2e.json`: los archivos comparten la base.
 
 **Qué cubren:** el flujo completo de registro a edición del negocio; rotación de
@@ -1044,13 +1044,13 @@ La red de seguridad final, y la única parte de esta fase que puede salir mal en
 > `global-setup` que migra y siembra, helpers en `test/utils/`). Acá se suman los
 > flujos que dependen de los dominios de las fases 2 a 7.
 
-Flujos críticos que faltan:
+Flujos críticos:
 
-- Registro → primer turno → pago de seña → atención.
-- Doble-booking concurrente (debe fallar uno).
-- Cancelación con/sin reembolso según política.
-- Aislamiento entre tenants sobre los dominios nuevos (el de auth/tenant ya está cubierto).
-- Rate limiting: los e2e actuales lo desactivan, así que hay que probarlo aparte.
+- ✅ **Doble-booking concurrente** — `concurrency.e2e-spec.ts`. Dos POST simultáneos casi nunca se pisan de verdad (el primero termina antes de que el segundo inserte, y lo rechaza la validación previa, no el EXCLUDE). El test fuerza el camino real: una conexión cruda de `pg` deja un `INSERT` sin commitear ocupando el hueco y se espera a que el segundo pedido quede **efectivamente trabado** (`pg_stat_activity`, `wait_event_type = 'Lock'`) antes de commitear. Ahí sí dispara el EXCLUDE, y lo que se prueba es que sale **409 y no 500**.
+- ✅ **Cancelación con y sin reembolso** — `cancellation-refund.e2e-spec.ts`. Los cuatro tipos de política, en término y tarde, con la seña **cobrada de verdad** (checkout + webhook) y no escribiendo `depositPaid` a mano. Encontró un bug: `assertChargeable` bloqueaba también las devoluciones, así que la API calculaba el reembolso y después se negaba a asentarlo.
+- ✅ **Rate limiting** — `throttling.e2e-spec.ts`, con el guard prendido. Encontró otro: `RATE_LIMIT_HEADERS` declaraba `Retry-After` a secas, que no existe (el real es `Retry-After-short`), así que CORS no exponía el único dato accionable de un 429.
+- ✅ **Aislamiento entre tenants** sobre los dominios nuevos — cubierto por `rls.e2e-spec.ts` (Fase 8.5) y por los tests de aislamiento de cada módulo.
+- Registro → primer turno → pago de seña → atención (el recorrido entero en un solo test; hoy está cubierto por tramos).
 
 ### 9.2 Carga
 
