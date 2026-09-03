@@ -22,6 +22,7 @@ import { ActiveSubscriptionGuard } from './common/guards/active-subscription.gua
 import { PublicTenantGuard } from './common/guards/public-tenant.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { MailModule } from './common/mail';
+import { securityHeaders } from './common/security/security-headers';
 import { PrismaModule } from './prisma/prisma.module';
 import { AppointmentsModule } from './modules/appointments/appointments.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -150,9 +151,18 @@ export class AppModule implements NestModule {
    * `{*path}` es la sintaxis de wildcard de Express 5 (Nest 11); el viejo `'*'`
    * sigue funcionando pero emite un warning de deprecación.
    */
+  constructor(private readonly config: ConfigService<Env, true>) {}
+
   configure(consumer: MiddlewareConsumer): void {
     consumer
-      .apply(TenantContextMiddleware)
+      // Los headers primero por convención de lectura, no porque haga falta:
+      // ninguno de los dos corta la cadena, así que invirtiéndolos las
+      // respuestas salen igual (medido). Si algún día se agrega un middleware
+      // que sí pueda responder por su cuenta, este orden pasa a importar.
+      .apply(
+        securityHeaders(this.config.get('NODE_ENV', { infer: true })),
+        TenantContextMiddleware,
+      )
       .forRoutes({ path: '{*path}', method: RequestMethod.ALL });
   }
 }

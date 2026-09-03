@@ -1068,23 +1068,23 @@ Target inicial: p95 < 300ms en availability con 50 RPS.
 - **Prometheus** scrape de `/metrics` (con `@willsoto/nestjs-prometheus`).
 - Dashboards en Grafana: latencia por endpoint, tasa de error, queue depth.
 
-### 9.4 CI/CD
+### 9.4 CI — hecha (2026-09-02); falta el CD
 
-GitHub Actions:
+`.github/workflows/ci.yml`, tres jobs:
 
-1. Lint + typecheck.
-2. Unit tests.
-3. E2E con Postgres en service container.
-4. Build.
-5. Deploy (Railway / Fly / Render / lo que decidan).
+- ✅ **`check`**: lint (sin `--fix`), typecheck, unitarios y build. Va primero y sin servicios: si falla, no vale la pena levantar una base para enterarse de lo mismo cinco minutos después.
+- ✅ **`e2e`**: Postgres 16 en service container —la misma imagen que el docker-compose, porque las migraciones usan EXCLUDE, índices parciales y RLS— con `global-setup` armando la base, el seed y **el rol restringido**. Verificado corriendo la suite desde una base y un rol inexistentes, que es lo único que CI hace distinto.
+- ✅ **`audit`**, sin bloquear. `npm audit` reporta hoy 19 vulnerabilidades, casi todas transitivas de `prisma`, y su "arreglo" es **bajar Prisma a la 6**. Un CI rojo por algo que no se puede arreglar deja de mirarse; queda como aviso.
+- ⚠️ **`npm run lint` lleva `--fix` y no sirve para CI**: arregla y sale en verde, escondiendo la deriva. Por eso ahora hay `lint:check` y `typecheck`.
+- Falta el **deploy**: no hay Dockerfile de producción ni destino elegido.
 
-### 9.5 Seguridad final
+### 9.5 Seguridad final — a medias (2026-09-02)
 
-- Audit `npm audit` y Snyk.
-- Helmet headers.
-- CORS configurado por env.
-- Rate limiting endpoint por endpoint.
-- Rotación de JWT secret + estrategia de invalidación masiva si hay leak.
+- ✅ **Helmet**, y **como middleware de `AppModule`, no en `main.ts`**. Es la misma razón que el `ValidationPipe` y el filtro de errores: la app de los e2e se levanta con `createNestApplication()` y no ejecuta el bootstrap, así que lo que viva ahí no se prueba nunca. Puesto donde está, hay 6 e2e que lo fijan — verificado mutando: sin Helmet, 5 se caen.
+- ✅ **Swagger no se publica en producción.** No es que sea inseguro: publica el mapa completo de la API —cada ruta, cada campo, cada regla de validación— a cualquiera que pase. La decisión vive en `shouldExposeDocs()` y no en un `if` en `main.ts` para que tenga un test.
+- ✅ CORS ya estaba configurado por env desde la Fase 1.
+- ✅ `npm audit` en CI, sin bloquear (ver §9.4).
+- Falta: rate limiting revisado endpoint por endpoint, y la rotación del `JWT_SECRET` con su estrategia de invalidación masiva.
 
 **✅ Done cuando:** podés desplegar con confianza y dormir tranquilo.
 
