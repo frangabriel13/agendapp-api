@@ -27,6 +27,11 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { EmployeeRole } from '@prisma/client';
+import { Throttle } from '@nestjs/throttler';
+import {
+  CREDENTIALS_THROTTLE,
+  MAIL_THROTTLE,
+} from '../../config/throttler.config';
 import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { EmployeeInvitationService } from './employee-invitations.service';
@@ -79,6 +84,11 @@ export class EmployeesController {
     entityType: AuditEntity.EMPLOYEE,
   })
   @Public()
+  // Mismo tope que un login, y por el mismo motivo: es público, canjea un
+  // token de un solo uso y lo verifica con argon2. Sin esto, el link de
+  // invitación se puede intentar adivinar cien veces por minuto por IP, y cada
+  // intento cuesta un hash.
+  @Throttle(CREDENTIALS_THROTTLE)
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary: 'Activa la cuenta de un empleado invitado',
@@ -102,6 +112,8 @@ export class EmployeesController {
     entityIdFrom: 'employee.id',
   })
   @Roles(...MANAGERS)
+  // Crear un empleado manda la invitación por mail, igual que reenviarla.
+  @Throttle(MAIL_THROTTLE)
   @ApiOperation({
     summary: 'Invita a un empleado',
     description:
@@ -213,6 +225,9 @@ export class EmployeesController {
 
   @Post(':id/invitation')
   @Roles(...MANAGERS)
+  // Cada llamada manda un mail a una casilla ajena firmado por nuestro
+  // dominio. El rol ya limita quién puede, pero no cuántas veces.
+  @Throttle(MAIL_THROTTLE)
   @ApiOperation({
     summary: 'Reenvía la invitación',
     description:

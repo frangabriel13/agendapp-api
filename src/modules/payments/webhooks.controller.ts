@@ -15,20 +15,10 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { WEBHOOK_THROTTLE } from '../../config/throttler.config';
 import { Public } from '../../common/decorators/public.decorator';
 import { WebhookResultDto } from './dto/payment.dto';
 import { PaymentsService } from './payments.service';
-
-/**
- * Mercado Pago avisa en ráfagas y reintenta, así que el límite global (10/s,
- * 100/min) le queda corto. Sigue habiendo tope porque es un endpoint público:
- * la firma se verifica antes de tocar la base, y un HMAC es barato, pero no
- * gratis.
- */
-const WEBHOOK_THROTTLE = {
-  short: { limit: 30, ttl: 1_000 },
-  long: { limit: 600, ttl: 60_000 },
-};
 
 @ApiTags('webhooks')
 @Controller('webhooks')

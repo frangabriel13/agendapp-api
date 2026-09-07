@@ -12,9 +12,10 @@ import {
   switchPlan,
   type TestApp,
 } from './utils/e2e-app';
+import { enHorarioDe, proximoLunes } from './utils/fechas';
 
 /** Lunes, bien adelante en el calendario. */
-const LUNES = '2026-09-07';
+const LUNES = proximoLunes();
 const DAY_OF_WEEK = 1;
 
 const PRECIO = 100_000;
@@ -57,12 +58,8 @@ interface CheckoutResult {
   reused: boolean;
 }
 
-/** `"10:00"` de Buenos Aires como instante ISO (UTC-3 todo el año). */
-const enBuenosAires = (hhmm: string): string => {
-  const [hours, minutes] = hhmm.split(':').map(Number);
-
-  return `${LUNES}T${String(hours + 3).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00.000Z`;
-};
+/** `"10:00"` de Buenos Aires como instante ISO, en el lunes de los tests. */
+const enBuenosAires = (hhmm: string): string => enHorarioDe(LUNES, hhmm);
 
 describe('Pagos (e2e)', () => {
   let app: TestApp;

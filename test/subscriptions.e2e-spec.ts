@@ -13,8 +13,17 @@ import {
   switchPlan,
   type TestApp,
 } from './utils/e2e-app';
+import {
+  enHorarioDe,
+  primerDiaDelMes,
+  proximoLunes,
+  ultimoDiaDelMes,
+} from './utils/fechas';
 
 const DIA = 24 * 60 * 60 * 1000;
+
+/** El día de los turnos que se intentan reservar: lunes, y siempre futuro. */
+const LUNES = proximoLunes();
 
 /** El default de `SUBSCRIPTION_GRACE_DAYS`. */
 const GRACE_DAYS = 7;
@@ -471,13 +480,13 @@ describe('Suscripciones (e2e)', () => {
     it('deber poco no bloquea', async () => {
       const ctx = await overdueBy(2);
 
-      await book(ctx, '2026-09-07T13:00:00.000Z').expect(201);
+      await book(ctx, enHorarioDe(LUNES, '10:00')).expect(201);
     });
 
     it('pasada la gracia devuelve 402', async () => {
       const ctx = await overdueBy(GRACE_DAYS + 1);
 
-      const response = await book(ctx, '2026-09-07T13:00:00.000Z').expect(402);
+      const response = await book(ctx, enHorarioDe(LUNES, '10:00')).expect(402);
 
       expect((response.body as { message: string }).message).toMatch(
         /suscripción está vencida/i,
@@ -495,7 +504,7 @@ describe('Suscripciones (e2e)', () => {
           employeeId: ctx.employeeId,
           customerId: ctx.customerId,
           serviceIds: [ctx.serviceId],
-          startsAt: '2026-09-07T13:00:00.000Z',
+          startsAt: enHorarioDe(LUNES, '10:00'),
           frequency: 'WEEKLY',
           occurrences: 3,
         })
@@ -512,7 +521,9 @@ describe('Suscripciones (e2e)', () => {
         await overdueBy(GRACE_DAYS + 30);
 
         await request(server())
-          .get('/appointments?from=2026-09-01&to=2026-09-30')
+          .get(
+            `/appointments?from=${primerDiaDelMes(LUNES)}&to=${ultimoDiaDelMes(LUNES)}`,
+          )
           .set(...auth(tenant.accessToken))
           .expect(200);
       });
@@ -520,7 +531,7 @@ describe('Suscripciones (e2e)', () => {
       it('cancelar y reprogramar un turno que ya estaba', async () => {
         const ctx = await overdueBy(2);
 
-        const turno = await book(ctx, '2026-09-07T13:00:00.000Z').expect(201);
+        const turno = await book(ctx, enHorarioDe(LUNES, '10:00')).expect(201);
         const id = (turno.body as { id: string }).id;
 
         await periodEndedDaysAgo(GRACE_DAYS + 10);
@@ -528,7 +539,7 @@ describe('Suscripciones (e2e)', () => {
         await request(server())
           .post(`/appointments/${id}/reschedule`)
           .set(...auth(tenant.accessToken))
-          .send({ startsAt: '2026-09-07T15:00:00.000Z' })
+          .send({ startsAt: enHorarioDe(LUNES, '12:00') })
           .expect(201);
       });
 
@@ -542,12 +553,12 @@ describe('Suscripciones (e2e)', () => {
     it('pagar destraba el alta de turnos', async () => {
       const ctx = await overdueBy(GRACE_DAYS + 1);
 
-      await book(ctx, '2026-09-07T13:00:00.000Z').expect(402);
+      await book(ctx, enHorarioDe(LUNES, '10:00')).expect(402);
 
       await checkout().expect(201);
       await notify(sandbox.lastPaymentId()).expect(200);
 
-      await book(ctx, '2026-09-07T13:00:00.000Z').expect(201);
+      await book(ctx, enHorarioDe(LUNES, '10:00')).expect(201);
     });
   });
 });

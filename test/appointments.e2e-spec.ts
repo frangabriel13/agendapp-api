@@ -11,10 +11,16 @@ import {
   type RegisteredTenant,
   type TestApp,
 } from './utils/e2e-app';
+import { enHorarioDe, masDias, masMeses, proximoLunes } from './utils/fechas';
 
-/** Lunes, bien adelante: así cancelar "en término" siempre da en término. */
-const LUNES = '2026-09-07';
-const MARTES = '2026-09-08';
+/**
+ * Lunes, bien adelante: así cancelar "en término" siempre da en término.
+ *
+ * La intención era esa desde el principio, pero la fecha estaba escrita a mano
+ * y el reloj la alcanzó. Ver `utils/fechas.ts`.
+ */
+const LUNES = proximoLunes();
+const MARTES = masDias(LUNES, 1);
 const DAY_OF_WEEK = 1;
 
 interface AppointmentResponse {
@@ -56,11 +62,9 @@ interface ChangeStatusResult {
   } | null;
 }
 
-/** `"09:00"` de Buenos Aires como instante ISO (UTC-3 todo el año). */
+/** `"09:00"` de Buenos Aires como instante ISO, en el lunes de los tests. */
 function enBuenosAires(hhmm: string, date = LUNES): string {
-  const [hours, minutes] = hhmm.split(':').map(Number);
-
-  return `${date}T${String(hours + 3).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00.000Z`;
+  return enHorarioDe(date, hhmm);
 }
 
 function tokenFromUrl(activationUrl: string): string {
@@ -907,10 +911,10 @@ describe('Turnos (e2e)', () => {
       const result = response.body as RecurringResult;
 
       expect(fechas(result)).toEqual([
-        '2026-09-07',
-        '2026-09-14',
-        '2026-09-21',
-        '2026-09-28',
+        LUNES,
+        masDias(LUNES, 7),
+        masDias(LUNES, 14),
+        masDias(LUNES, 21),
       ]);
       expect(result.skipped).toEqual([]);
     });
@@ -938,15 +942,15 @@ describe('Turnos (e2e)', () => {
       }).expect(201);
 
       expect(fechas(response.body as RecurringResult)).toEqual([
-        '2026-09-07',
-        '2026-09-21',
-        '2026-10-05',
+        LUNES,
+        masDias(LUNES, 14),
+        masDias(LUNES, 28),
       ]);
     });
 
     it('mensual repite el día del mes', async () => {
-      // El 7 de octubre cae miércoles y el 7 de noviembre sábado: sin horario
-      // esos días la serie los saltearía, que es otro test.
+      // Repetir el día del mes cae casi siempre en otro día de la semana, y
+      // sin horario ese día la serie lo saltearía, que es otro test.
       await scheduleAllWeek(employeeId);
 
       const response = await serie({
@@ -955,28 +959,28 @@ describe('Turnos (e2e)', () => {
       }).expect(201);
 
       expect(fechas(response.body as RecurringResult)).toEqual([
-        '2026-09-07',
-        '2026-10-07',
-        '2026-11-07',
+        LUNES,
+        masMeses(LUNES, 1),
+        masMeses(LUNES, 2),
       ]);
     });
 
     /** La decisión de la fase: uno que choca no tumba a los demás. */
     it('saltea la fecha ocupada y crea el resto', async () => {
       // El segundo lunes ya tiene ese horario tomado.
-      await bookOk({ startsAt: enBuenosAires('10:00', '2026-09-14') });
+      await bookOk({ startsAt: enBuenosAires('10:00', masDias(LUNES, 7)) });
 
       const response = await serie().expect(201);
       const result = response.body as RecurringResult;
 
       expect(fechas(result)).toEqual([
-        '2026-09-07',
-        '2026-09-21',
-        '2026-09-28',
+        LUNES,
+        masDias(LUNES, 14),
+        masDias(LUNES, 21),
       ]);
       expect(result.skipped).toHaveLength(1);
       expect(result.skipped[0].startsAt).toBe(
-        enBuenosAires('10:00', '2026-09-14'),
+        enBuenosAires('10:00', masDias(LUNES, 7)),
       );
       expect(result.skipped[0].reason).toContain('libre');
     });
@@ -985,17 +989,21 @@ describe('Turnos (e2e)', () => {
       await request(server())
         .post(`/branches/${branchId}/special-days`)
         .set(...auth(tenant.accessToken))
-        .send({ date: '2026-09-21', isClosed: true, description: 'Feriado' })
+        .send({
+          date: masDias(LUNES, 14),
+          isClosed: true,
+          description: 'Feriado',
+        })
         .expect(201);
 
       const result = (await serie().expect(201)).body as RecurringResult;
 
-      expect(fechas(result)).not.toContain('2026-09-21');
+      expect(fechas(result)).not.toContain(masDias(LUNES, 14));
       expect(result.skipped).toHaveLength(1);
     });
 
     it('el grupo cuenta los turnos que existen, no los que se pidieron', async () => {
-      await bookOk({ startsAt: enBuenosAires('10:00', '2026-09-14') });
+      await bookOk({ startsAt: enBuenosAires('10:00', masDias(LUNES, 7)) });
 
       const result = (await serie().expect(201)).body as RecurringResult;
 

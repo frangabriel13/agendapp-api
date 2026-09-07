@@ -50,9 +50,12 @@ Usuarios que se logean al sistema (owner + empleados).
 | `phone` | VARCHAR | nullable |
 | `email_verified_at` | TIMESTAMP | nullable |
 | `last_login_at` | TIMESTAMP | nullable |
+| `token_version` | INTEGER | default 0; ver abajo |
 | `created_at` | TIMESTAMP | |
 | `updated_at` | TIMESTAMP | |
 | `deleted_at` | TIMESTAMP | nullable (soft delete) |
+
+`token_version` es lo que permite **cortar todos los access tokens vivos de un usuario de una** (Fase 9.5). El access token la lleva adentro como claim `tv` y `JwtStrategy` la compara en cada request contra esta columna: subirla en uno deja afuera a todo token ya emitido, sin tocar el `JWT_SECRET` ni a ningún otro usuario. Hace falta porque revocar los `refresh_tokens` no alcanza — el access sigue siendo válido hasta que expira, y en esa ventana de hasta 15 minutos quien te robó la sesión sigue operando aunque le hayas cambiado la contraseña. Se sube en `AuthService.closeAllSessions()`, que además revoca los refresh.
 
 `password_hash` es nullable desde la Fase 2.2: un empleado invitado tiene cuenta creada pero todavía no eligió su contraseña. **Mientras esté en null no puede loguearse** — `AuthService.login` lo rechaza igual que a un email desconocido, para no delatar qué cuentas existen. Se completa al aceptar la invitación (ver `employee_invitations`).
 

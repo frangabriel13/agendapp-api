@@ -11,6 +11,19 @@ export interface JwtPayload {
   tenantId: string;
   employeeId: string;
   role: EmployeeRole;
+
+  /**
+   * `User.tokenVersion` al momento de firmar.
+   *
+   * Es lo que permite invalidar de una todos los access tokens de un usuario:
+   * `JwtStrategy` lo compara contra la columna y, si no coinciden, el token ya
+   * no vale. Sin esto, revocar los refresh tokens deja al access vivo hasta
+   * que expira —hasta 15 minutos— y en esa ventana quien robó la sesión sigue
+   * adentro aunque le hayan cambiado la contraseña.
+   *
+   * El nombre es corto a propósito: viaja en cada request.
+   */
+  tv: number;
 }
 
 /**

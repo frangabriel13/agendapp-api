@@ -26,34 +26,11 @@ import {
   PublicServiceGroupDto,
 } from './dto/public-catalog.dto';
 import { PublicBusinessDto } from './dto/public-portal.dto';
+import {
+  BOOKING_THROTTLE,
+  PORTAL_THROTTLE,
+} from '../../config/throttler.config';
 import { PublicService } from './public.service';
-
-/**
- * Más ajustado que el global (10/s, 100/min) porque acá no hay nadie
- * identificado: el único costo de pedir es tener una IP. Sigue siendo cómodo
- * para una persona navegando —abrir el portal son tres pedidos— y molesto para
- * quien quiera bajarse el catálogo de todos los negocios.
- */
-const PORTAL_THROTTLE = {
-  short: { limit: 5, ttl: 1_000 },
-  long: { limit: 60, ttl: 60_000 },
-};
-
-/**
- * El del `POST` es mucho más duro que el de los `GET`, y no por el costo de
- * servirlo: cada reserva **le ocupa un hueco al negocio**. Sin un límite propio,
- * alguien le llena la agenda de la semana con teléfonos inventados y el límite
- * de lectura ni se entera, porque cincuenta reservas son cincuenta pedidos.
- *
- * Quince por hora deja pasar a una familia reservando desde la misma casa y no
- * a un script. **No alcanza solo** —las IPs son baratas—; es la primera capa,
- * y la que de verdad limita el daño es que un turno sin seña pagada se libera
- * a los `ABANDONED_HOLD_MINUTES`.
- */
-const BOOKING_THROTTLE = {
-  short: { limit: 3, ttl: 60_000 },
-  long: { limit: 15, ttl: 3_600_000 },
-};
 
 /**
  * El portal público de un negocio: lo que ve alguien sin cuenta.

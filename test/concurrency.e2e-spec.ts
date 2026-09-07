@@ -12,16 +12,15 @@ import {
   type RegisteredTenant,
   type TestApp,
 } from './utils/e2e-app';
+import { enHorarioDe, proximoLunes } from './utils/fechas';
 
 /** Lunes; el horario de atención se carga para todos los días igual. */
-const DIA = '2026-09-07';
+const DIA = proximoLunes();
 const DAY_OF_WEEK = 1;
 
-/** `"10:00"` de Buenos Aires como instante ISO (UTC-3 todo el año). */
+/** `"10:00"` de Buenos Aires como instante ISO. */
 function enBuenosAires(hhmm: string): string {
-  const [h, m] = hhmm.split(':').map(Number);
-
-  return `${DIA}T${String(h + 3).padStart(2, '0')}:${String(m).padStart(2, '0')}:00.000Z`;
+  return enHorarioDe(DIA, hhmm);
 }
 
 /**

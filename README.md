@@ -488,6 +488,63 @@ del compose:
 
 ---
 
+## Sesiones y rotación del `JWT_SECRET`
+
+### Cerrar sesiones sin tocar el secreto
+
+El access token lleva un claim `tv` con `users.token_version`. `JwtStrategy` lo
+compara contra la columna en cada request —la fila ya se trae, así que no es una
+query de más—, y subir la columna en uno deja afuera **al instante** a todos los
+tokens ya emitidos de ese usuario.
+
+Es lo que hace `AuthService.closeAllSessions()`, que además revoca los refresh
+tokens. Las dos mitades son necesarias: revocar los refresh deja al access vivo
+hasta 15 minutos, y subir la versión sin revocar los refresh deja que el otro se
+emita uno nuevo. Corre en `POST /auth/logout-all`, al cambiar la contraseña y al
+resetearla.
+
+Para echar a un usuario desde la consola, sin endpoint:
+
+```sql
+UPDATE users SET token_version = token_version + 1 WHERE email = 'quien@sea';
+DELETE FROM refresh_tokens WHERE user_id = (SELECT id FROM users WHERE email = 'quien@sea');
+```
+
+### Rotar el `JWT_SECRET`
+
+**No hace falta ninguna maquinaria de dos secretos, y es por una decisión de
+diseño anterior: los refresh tokens NO son JWT.** Son filas opacas
+(`<id>.<secreto>`) en `refresh_tokens`, y el `JWT_SECRET` no las toca. Cambiar
+el secreto mata todos los access tokens de una y cada cliente se recupera solo
+con un refresh.
+
+El procedimiento es cambiar la variable y reiniciar:
+
+```bash
+# Un secreto nuevo (mínimo 32 caracteres, lo exige envSchema al arrancar):
+openssl rand -base64 48
+```
+
+Lo que se ve mientras tanto: un 401 por cliente, un refresh, y sigue todo. No
+hay que deslogear a nadie ni avisar.
+
+⚠️ **Con una condición, y es del lado del front.** Al rotar, *todos* los
+requests en el aire fallan a la vez. Si el interceptor dispara un refresh por
+cada uno, el segundo cae en la detección de reuso de `RefreshTokenService` —que
+asume robo del token— y **revoca la familia entera**: la rotación "que no nota
+nadie" termina echando a todo el mundo. El front tiene que serializar sus
+refresh, y está anotado en `docs/frontend-context.md`.
+
+⚠️ **Con más de una réplica, rotar de una sí corta.** Durante el rollout
+conviven réplicas con el secreto viejo y con el nuevo, y un token emitido por
+una lo rechaza la otra: los clientes entran en un ciclo de 401 → refresh → 401
+que termina en la detección de reuso. Con una sola réplica no pasa. Si algún día
+hay varias, la salida es hacerlo en dos pasos —aceptar los dos secretos, después
+firmar con el nuevo—, y eso todavía no está implementado porque hoy no hay a
+quién romperle.
+
+---
+
 ## Aislamiento entre negocios (RLS)
 
 Cada negocio ve solo lo suyo, y eso está defendido **dos veces**:

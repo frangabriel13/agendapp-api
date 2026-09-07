@@ -11,9 +11,17 @@ import {
   switchPlan,
   type TestApp,
 } from './utils/e2e-app';
+import {
+  enHorarioDe,
+  masDias,
+  masMeses,
+  primerDiaDelMes,
+  proximoLunes,
+  ultimoDiaDelMes,
+} from './utils/fechas';
 
 /** Lunes, bien adelante en el calendario. */
-const LUNES = '2026-09-07';
+const LUNES = proximoLunes();
 const DAY_OF_WEEK = 1;
 
 const PRECIO = 100_000;
@@ -48,11 +56,21 @@ interface RangePage {
 }
 
 /** `"10:00"` de Buenos Aires como instante ISO (UTC-3 todo el año). */
-const enBuenosAires = (hhmm: string): string => {
-  const [hours, minutes] = hhmm.split(':').map(Number);
+const enBuenosAires = (hhmm: string): string => enHorarioDe(LUNES, hhmm);
 
-  return `${LUNES}T${String(hours + 3).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00.000Z`;
-};
+/**
+ * El día N del mes del turno, a las 10:00 de Buenos Aires.
+ *
+ * Anclado al **primero** del mes y no a `LUNES`, que puede caer hasta el 28:
+ * sumarle días a un 28 se va de mes en febrero, y este archivo filtra cobros
+ * justamente por mes.
+ */
+const elDia = (n: number): string =>
+  enHorarioDe(masDias(primerDiaDelMes(LUNES), n - 1), '10:00');
+
+/** El `from`/`to` que cubre el mes de esa fecha. */
+const rangoDe = (fecha: string): string =>
+  `from=${primerDiaDelMes(fecha)}&to=${ultimoDiaDelMes(fecha)}`;
 
 describe('Cobros por rango (e2e)', () => {
   let app: TestApp;
@@ -236,10 +254,9 @@ describe('Cobros por rango (e2e)', () => {
       .get(`/payments?${query}`)
       .set(...auth(tenant.accessToken));
 
-  async function septiembre(extra = ''): Promise<RangePage> {
-    const response = await range(
-      `from=2026-09-01&to=2026-09-30${extra}`,
-    ).expect(200);
+  /** El reporte del mes en el que cae el turno de los tests. */
+  async function elMes(extra = ''): Promise<RangePage> {
+    const response = await range(`${rangoDe(LUNES)}${extra}`).expect(200);
 
     return response.body as RangePage;
   }
@@ -256,10 +273,10 @@ describe('Cobros por rango (e2e)', () => {
 
   it('lista los cobros acreditados del rango con sus totales', async () => {
     const turno = await book(luciaId, centroId);
-    await pay(turno, 60_000, '2026-09-08T13:00:00.000Z');
-    await pay(turno, 40_000, '2026-09-10T13:00:00.000Z');
+    await pay(turno, 60_000, elDia(8));
+    await pay(turno, 40_000, elDia(10));
 
-    const page = await septiembre();
+    const page = await elMes();
 
     expect(page.meta.total).toBe(2);
     expect(page.totals).toEqual({
@@ -285,12 +302,12 @@ describe('Cobros por rango (e2e)', () => {
 
   it('una devolución resta del neto y suma a lo devuelto', async () => {
     const turno = await book(luciaId, centroId);
-    await pay(turno, 100_000, '2026-09-08T13:00:00.000Z');
-    await pay(turno, 30_000, '2026-09-09T13:00:00.000Z', {
+    await pay(turno, 100_000, elDia(8));
+    await pay(turno, 30_000, elDia(9), {
       paymentType: 'REFUND',
     });
 
-    const page = await septiembre();
+    const page = await elMes();
 
     expect(page.meta.total).toBe(2);
     expect(page.totals).toEqual({
@@ -302,10 +319,10 @@ describe('Cobros por rango (e2e)', () => {
 
   it('los totales son del rango entero, no de la página', async () => {
     const turno = await book(luciaId, centroId);
-    await pay(turno, 60_000, '2026-09-08T13:00:00.000Z');
-    await pay(turno, 40_000, '2026-09-10T13:00:00.000Z');
+    await pay(turno, 60_000, elDia(8));
+    await pay(turno, 40_000, elDia(10));
 
-    const page = await septiembre('&pageSize=1');
+    const page = await elMes('&pageSize=1');
 
     expect(page.data).toHaveLength(1);
     expect(page.meta).toMatchObject({ total: 2, totalPages: 2, pageSize: 1 });
@@ -324,18 +341,18 @@ describe('Cobros por rango (e2e)', () => {
       .send({})
       .expect(201);
 
-    const page = await septiembre();
+    const page = await elMes();
 
     expect(page.meta.total).toBe(0);
     expect(page.totals.netCents).toBe(0);
   });
 
   it('pedir los pendientes es un 400, no una lista vacía', async () => {
-    await range('from=2026-09-01&to=2026-09-30&status=PENDING').expect(400);
-    await range('from=2026-09-01&to=2026-09-30&status=FAILED').expect(400);
+    await range(`${rangoDe(LUNES)}&status=PENDING`).expect(400);
+    await range(`${rangoDe(LUNES)}&status=FAILED`).expect(400);
 
-    await range('from=2026-09-01&to=2026-09-30&status=SUCCEEDED').expect(200);
-    await range('from=2026-09-01&to=2026-09-30&status=REFUNDED').expect(200);
+    await range(`${rangoDe(LUNES)}&status=SUCCEEDED`).expect(200);
+    await range(`${rangoDe(LUNES)}&status=REFUNDED`).expect(200);
   });
 
   /**
@@ -346,32 +363,33 @@ describe('Cobros por rango (e2e)', () => {
   it('los días del rango son los del negocio, no los de UTC', async () => {
     const turno = await book(luciaId, centroId);
 
-    // 30/09 21:30 en Buenos Aires = 01/10 00:30 en UTC.
-    await pay(turno, 50_000, '2026-10-01T00:30:00.000Z');
+    // Las 21:30 del último día del mes en Buenos Aires ya son del día 1 del
+    // mes siguiente en UTC, que es el error que se busca.
+    await pay(turno, 50_000, enHorarioDe(ultimoDiaDelMes(LUNES), '21:30'));
 
-    const septiembreConEse = await septiembre();
-    expect(septiembreConEse.meta.total).toBe(1);
-    expect(septiembreConEse.totals.netCents).toBe(50_000);
+    const elMesConEse = await elMes();
+    expect(elMesConEse.meta.total).toBe(1);
+    expect(elMesConEse.totals.netCents).toBe(50_000);
 
-    const octubre = await range('from=2026-10-01&to=2026-10-31').expect(200);
-    expect((octubre.body as RangePage).meta.total).toBe(0);
+    const mesSiguiente = await range(rangoDe(masMeses(LUNES, 1))).expect(200);
+    expect((mesSiguiente.body as RangePage).meta.total).toBe(0);
   });
 
   it('un cobro de otro mes no entra', async () => {
     const turno = await book(luciaId, centroId);
-    await pay(turno, 50_000, '2026-08-15T13:00:00.000Z');
+    await pay(turno, 50_000, enHorarioDe(masMeses(LUNES, -1), '10:00'));
 
-    expect((await septiembre()).meta.total).toBe(0);
+    expect((await elMes()).meta.total).toBe(0);
   });
 
   it('otro negocio no ve estos cobros', async () => {
     const turno = await book(luciaId, centroId);
-    await pay(turno, 50_000, '2026-09-08T13:00:00.000Z');
+    await pay(turno, 50_000, elDia(8));
 
     const otro = await registerTenant(app, 'Otro Negocio');
 
     const response = await request(server())
-      .get('/payments?from=2026-09-01&to=2026-09-30')
+      .get(`/payments?${rangoDe(LUNES)}`)
       .set(...auth(otro.accessToken))
       .expect(200);
 
@@ -384,36 +402,34 @@ describe('Cobros por rango (e2e)', () => {
     const deLucia = await book(luciaId, centroId);
     const deAna = await book(anaId, palermoId);
 
-    await pay(deLucia, 60_000, '2026-09-08T13:00:00.000Z');
-    await pay(deAna, 40_000, '2026-09-09T13:00:00.000Z');
+    await pay(deLucia, 60_000, elDia(8));
+    await pay(deAna, 40_000, elDia(9));
 
-    expect((await septiembre()).totals.netCents).toBe(100_000);
+    expect((await elMes()).totals.netCents).toBe(100_000);
 
-    const lucia = await septiembre(`&employeeId=${luciaId}`);
+    const lucia = await elMes(`&employeeId=${luciaId}`);
     expect(lucia.meta.total).toBe(1);
     expect(lucia.totals.netCents).toBe(60_000);
 
-    const palermo = await septiembre(`&branchId=${palermoId}`);
+    const palermo = await elMes(`&branchId=${palermoId}`);
     expect(palermo.meta.total).toBe(1);
     expect(palermo.totals.netCents).toBe(40_000);
 
     // Los dos a la vez se cruzan: Lucía no atiende en Palermo.
-    const cruce = await septiembre(
-      `&employeeId=${luciaId}&branchId=${palermoId}`,
-    );
+    const cruce = await elMes(`&employeeId=${luciaId}&branchId=${palermoId}`);
     expect(cruce.meta.total).toBe(0);
   });
 
   it('filtra por medio de pago', async () => {
     const turno = await book(luciaId, centroId);
-    await pay(turno, 60_000, '2026-09-08T13:00:00.000Z', {
+    await pay(turno, 60_000, elDia(8), {
       paymentMethod: 'CASH',
     });
-    await pay(turno, 40_000, '2026-09-09T13:00:00.000Z', {
+    await pay(turno, 40_000, elDia(9), {
       paymentMethod: 'TRANSFER',
     });
 
-    const efectivo = await septiembre('&paymentMethod=CASH');
+    const efectivo = await elMes('&paymentMethod=CASH');
     expect(efectivo.meta.total).toBe(1);
     expect(efectivo.totals.netCents).toBe(60_000);
   });
@@ -443,14 +459,14 @@ describe('Cobros por rango (e2e)', () => {
    */
   it('un PROFESSIONAL no ve la plata del negocio, pero sí la de un turno', async () => {
     const turno = await book(luciaId, centroId);
-    await pay(turno, 50_000, '2026-09-08T13:00:00.000Z');
+    await pay(turno, 50_000, elDia(8));
 
     await prisma.employee.update({
       where: { id: tenant.employeeId },
       data: { role: 'PROFESSIONAL' },
     });
 
-    await range('from=2026-09-01&to=2026-09-30').expect(403);
+    await range(rangoDe(LUNES)).expect(403);
 
     await request(server())
       .get(`/appointments/${turno}/payments`)
