@@ -476,7 +476,8 @@ para migrar.
 No es un Dockerfile escrito de memoria. Construido y corrido contra el Postgres
 del compose:
 
-- `prisma migrate deploy` aplica las 18 migraciones desde la imagen.
+- `prisma migrate deploy` aplica las migraciones desde la imagen (eran 18 el
+  día que se verificó; hoy son 19).
 - Arranca con el **rol restringido** y el healthcheck da `healthy`.
 - Dos negocios registrados por la API no se ven entre sí (RLS activo de verdad).
 - `/api` responde 404: Swagger no se publica.
@@ -485,6 +486,42 @@ del compose:
   `enableShutdownHooks()` en `main.ts`: sin ese handler, un Node que es PID 1
   ignora `SIGTERM` — medido, un contenedor sin handler tarda los 10 s y sale
   137.
+- Con Sentry adentro (2026-09-07): sin `SENTRY_DSN` no hay cliente y el SDK
+  queda en no-op; con DSN inicializa y la imagen conserva `sendDefaultPii:
+  false` y `tracesSampleRate: 0`. Y `docker stop` sigue saliendo en 0 s.
+
+---
+
+## Errores en producción (Sentry)
+
+Está cableado y **apagado por defecto**: sin `SENTRY_DSN` no se llama a `init` y
+todo el SDK queda en no-op. Eso cubre desarrollo y los tests sin ninguna
+condición especial — un error de la suite no tiene por qué viajar a un servicio
+externo. Se prende en producción poniendo la variable:
+
+```bash
+SENTRY_DSN="https://...@...ingest.sentry.io/..."
+SENTRY_TRACES_SAMPLE_RATE=0     # 0 = solo errores; las trazas se pagan por volumen
+```
+
+Tres cosas que conviene saber antes de tocarlo:
+
+- **`src/instrument.ts` va primero en `main.ts`**, antes que cualquier import de
+  Nest. El SDK instrumenta parchando librerías al cargarlas: si Nest se importa
+  antes, las referencias ya están tomadas y el parche no rompe nada, simplemente
+  no ve nada. Por lo mismo lee `process.env` en crudo — todavía no hay
+  `ConfigService`.
+- **Solo se reportan los 5xx.** El corte vive en `AllExceptionsFilter`, el mismo
+  que decide si el log va como `error` o como `warn`. Un 400 o un 404 son la API
+  funcionando: el pedido estaba mal. Reportarlos llenaría el tablero de ruido
+  hasta que deje de mirarse.
+- **No sale nada sensible.** `sendDefaultPii: false` explícito y un `beforeSend`
+  que borra el header `Authorization`, las cookies y el cuerpo del request. Este
+  backend recibe contraseñas en `/auth/login` y datos de clientes de los
+  negocios; que no salgan no puede depender de un default.
+
+Cada evento lleva el `requestId`, que es lo que lo empalma con la línea del log
+—con varias réplicas, el timestamp no alcanza para saber cuál fue—.
 
 ---
 

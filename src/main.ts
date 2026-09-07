@@ -1,3 +1,7 @@
+// ⚠️ PRIMERO. Sentry instrumenta las librerías parchándolas al cargarlas, así
+// que tiene que correr antes de que se importe nada de Nest. Ver `instrument.ts`.
+import './instrument';
+
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';

@@ -7,6 +7,7 @@ import {
   type NestModule,
 } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { SentryModule } from '@sentry/nestjs/setup';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
@@ -46,6 +47,16 @@ import type { Env } from './config/env.schema';
 
 @Module({
   imports: [
+    /**
+     * Solo aporta las trazas de performance con nombre de Nest (controller y
+     * handler en vez de "GET /algo" a secas). Los **errores** no pasan por acá:
+     * los reporta `AllExceptionsFilter`, que ya decidía qué es un error y no
+     * tiene sentido duplicar en un segundo filtro.
+     *
+     * Con `SENTRY_TRACES_SAMPLE_RATE` en 0 —el default— y sin `SENTRY_DSN` no
+     * hace absolutamente nada: no hay cliente que reciba las trazas.
+     */
+    SentryModule.forRoot(),
     ConfigModule.forRoot({
       isGlobal: true,
       cache: true,
