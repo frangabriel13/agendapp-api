@@ -55,8 +55,27 @@ async function bootstrap(): Promise<void> {
     SwaggerModule.setup('api', app, document);
   }
 
+  /**
+   * Sin esto, un `SIGTERM` mata el proceso sin avisarle a nadie.
+   *
+   * Es lo que hace que `onModuleDestroy` corra al apagar, y de ahí cuelga algo
+   * concreto: `PrismaService` cierra el pool de `pg` que él mismo creó (el de
+   * `TenantPool`, que Prisma no conoce y por lo tanto no cierra). Sin hooks,
+   * cada rollout deja conexiones colgadas hasta que Postgres las expira solo,
+   * y con réplicas eso se acumula.
+   *
+   * En un contenedor pesa más que en local: el orquestador manda `SIGTERM`,
+   * espera unos segundos y después manda `SIGKILL`. Todo lo que haya que
+   * cerrar ordenadamente tiene que pasar en esa ventana.
+   */
+  app.enableShutdownHooks();
+
   const port = config.get('PORT', { infer: true });
-  await app.listen(port);
+
+  // El host explícito es para el contenedor: escuchando en la interfaz de
+  // loopback, el proceso anda pero nadie lo alcanza desde afuera y el síntoma
+  // es un healthcheck que falla sin un solo error en el log.
+  await app.listen(port, '0.0.0.0');
 }
 
 void bootstrap();

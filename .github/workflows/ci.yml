@@ -111,7 +111,6 @@ jobs:
   audit:
     name: Vulnerabilidades de dependencias (aviso)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -122,4 +121,39 @@ jobs:
 
       - run: npm ci
 
-      - run: npm audit --audit-level=high
+      # ⚠️ `continue-on-error` va en el STEP y no en el job. Puesto en el job
+      # evita que el workflow falle —el PR se puede mergear igual— pero GitHub
+      # **igual pinta ese check en rojo** en la lista del PR, que es
+      # exactamente lo que este job dice no querer: un check rojo permanente
+      # enseña a ignorar los checks rojos. Acá el job termina en verde y el
+      # hallazgo va al resumen del run, donde se lee de verdad.
+      - name: npm audit
+        id: audit
+        continue-on-error: true
+        # `shell: bash` explícito por el pipe: el default de Actions es
+        # `bash -e`, sin `pipefail`, así que el exit code de `npm audit` —que
+        # es lo único que dice si hubo hallazgos— quedaría tapado por el de
+        # `tee`, que siempre sale 0.
+        shell: bash
+        run: npm audit --audit-level=high | tee audit.txt
+
+      - name: Resumen
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Vulnerabilidades de dependencias"
+            echo
+            if [ "${{ steps.audit.outcome }}" = "success" ]; then
+              echo "Ninguna de severidad \`high\` o mayor."
+            else
+              echo "\`npm audit\` encontró vulnerabilidades \`high\` o mayores."
+              echo "No bloquea el merge, pero conviene mirar si alguna es de"
+              echo "una dependencia que corre en el servidor (y no del CLI de"
+              echo "Prisma, Jest o ESLint, que solo corren acá)."
+              echo
+              echo '```'
+              cat audit.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

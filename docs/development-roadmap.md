@@ -1076,7 +1076,11 @@ Target inicial: p95 < 300ms en availability con 50 RPS.
 - ✅ **`e2e`**: Postgres 16 en service container —la misma imagen que el docker-compose, porque las migraciones usan EXCLUDE, índices parciales y RLS— con `global-setup` armando la base, el seed y **el rol restringido**. Verificado corriendo la suite desde una base y un rol inexistentes, que es lo único que CI hace distinto.
 - ✅ **`audit`**, sin bloquear. `npm audit` reporta hoy 19 vulnerabilidades, casi todas transitivas de `prisma`, y su "arreglo" es **bajar Prisma a la 6**. Un CI rojo por algo que no se puede arreglar deja de mirarse; queda como aviso.
 - ⚠️ **`npm run lint` lleva `--fix` y no sirve para CI**: arregla y sale en verde, escondiendo la deriva. Por eso ahora hay `lint:check` y `typecheck`.
-- Falta el **deploy**: no hay Dockerfile de producción ni destino elegido.
+- ⚠️ **`continue-on-error` en el job pinta el check rojo igual.** El workflow no falla y el PR se puede mergear, pero GitHub muestra ese check como fallido en la lista — un rojo permanente que enseña a ignorar los rojos. Va en el **step**, y el hallazgo al `$GITHUB_STEP_SUMMARY`.
+- ✅ **Dockerfile de producción** (2026-09-03). Multi-stage, usuario `node`, sin Swagger, healthcheck contra `/health`. Construido y corrido de verdad contra el Postgres del compose, no escrito de memoria: aplica las 18 migraciones desde la imagen, arranca con el **rol restringido de RLS**, dos negocios registrados por la API no se ven entre sí, y `docker stop` sale en 0 s con exit 0.
+  - **Las migraciones no van en el arranque**: la app corre con el rol restringido, que no tiene DDL. Misma imagen, otro comando (`npx prisma migrate deploy`) y otra `DATABASE_URL`.
+  - Encontró un bug que solo aparecía en producción: **`npm run start:prod` estaba roto**. `prisma.config.ts` en la raíz corría el `rootDir` inferido de `tsc`, así que el build salía en `dist/src/main.js` y el script ejecutaba `dist/main`. No se notaba porque en dev se usa `nest start --watch`. Arreglado excluyéndolo en `tsconfig.build.json`.
+- Falta el **destino de deploy** y el job de CD, que depende de cuál sea.
 
 ### 9.5 Seguridad final — a medias (2026-09-02)
 

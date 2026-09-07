@@ -1,4 +1,26 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "test", "dist", "**/*spec.ts"]
+  "exclude": [
+    "node_modules",
+    "test",
+    "dist",
+    "**/*spec.ts",
+
+    // ⚠️ Estos tres NO son código de la app y sacarlos cambia dónde queda el
+    // build. `tsc` elige el `rootDir` como el directorio común de todo lo que
+    // compila: incluyéndolos, ese común es la raíz del repo y la salida queda
+    // en `dist/src/main.js`; sin ellos es `src/` y queda en `dist/main.js`,
+    // que es lo que `start:prod` y el `CMD` del Dockerfile ejecutan.
+    //
+    // Estuvo roto desde que Prisma 7 trajo `prisma.config.ts` a la raíz, y no
+    // se notó porque en desarrollo se usa `nest start --watch`, que no pasa
+    // por acá. Lo descubrió el primer arranque de la imagen de producción.
+    //
+    // Los tres son scripts de herramientas que corren con `ts-node` desde el
+    // fuente (el CLI de Prisma lee `prisma.config.ts`, no su compilado), así
+    // que compilarlos nunca sirvió para nada.
+    "prisma.config.ts",
+    "prisma/**/*",
+    "scripts/**/*"
+  ]
 }
