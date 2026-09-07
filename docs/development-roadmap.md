@@ -1053,14 +1053,34 @@ Flujos críticos:
 - ✅ **Las fechas de los tests, contra el reloj** (2026-09-07) — `test/utils/fechas.ts`. Siete specs tenían escrito `const LUNES = '2026-09-07'`, elegido cuando esa fecha era futura. Ese día el reloj la alcanzó y dos tests de cancelación empezaron a fallar solos: el turno quedó a menos de 24 h y después en el pasado, o sea fuera de la política. El commit que rompió la suite no fue el que la rompió, que es el peor síntoma que puede tener un test. Ahora todo sale de `proximoLunes()` y se deriva de ahí; `test/fechas.e2e-spec.ts` corre el reloj dos años, un día por vez y a dos horas del día distintas, para fijar los invariantes (siempre lunes, a 8–21 días, nunca después del 28 para que la serie mensual exista). Verificado mutando el helper: las dos mutaciones caen.
 - ✅ **Registro → primer turno → seña → atención** (2026-09-07) — `customer-journey.e2e-spec.ts`. Un solo `it` de ocho pasos, y es un solo `it` a propósito: partirlo en pasos independientes sería volver a tener tramos. Todo lo que hace ya está cubierto por otros archivos; lo que no estaba cubierto son las **costuras** — que el `appointmentId` del portal sea el que acepta el checkout, que el `providerPaymentId` del sandbox sea el que el webhook busca, que el turno nacido desde el portal sin sesión aparezca en la agenda del negocio correcto. Verificado mutando: si acreditar la seña deja de confirmar el turno, el test cae.
 
-### 9.2 Carga
+### 9.2 Carga — encontró un bug de producción antes de medir nada (2026-09-07)
 
-`k6` o `artillery` contra:
+Armando el escenario para medir (219.000 turnos en 3 negocios, 25 empleados y un año de agenda cada uno, con el rol restringido de RLS) apareció esto, que es lo que la fase venía a buscar:
 
-- `GET /appointments/availability` (el más caro).
-- `POST /public/:slug/appointments` con concurrencia.
+**La misma consulta, la misma base, el mismo instante:**
 
-Target inicial: p95 < 300ms en availability con 50 RPS.
+| Consulta | Rol dueño (dev) | Rol restringido (producción) |
+|---|---|---|
+| `availability` → turnos del día | 7 ms | **115 ms**, 121.296 buffers |
+| Portal → elegir profesional | — | **125 ms** |
+
+**La causa.** El filtro `status IN (BLOCKING_STATUSES)` hace que la consulta implique el **predicado parcial del índice GiST del constraint anti-doble-booking** (`status <> ALL(cancelados) AND deleted_at IS NULL`). Postgres entonces cree que ese índice contiene solo las filas que busca, lo costea en **8,4** y lo elige — pero contiene *todos* los turnos no cancelados del sistema, así que lo recorre entero. Con el rol dueño el planificador tiene con qué costear la alternativa y elige bien; **con RLS activo no, y elige el peor plan posible**. Es la misma trampa que hace que RLS no proteja en desarrollo, vista del otro lado.
+
+**El arreglo: mover el filtro de estado a memoria.** Sacado del `where`, la consulta deja de implicar el predicado parcial, el GiST deja de ser elegible y el planificador usa el índice que corresponde. Sin SQL crudo, sin índices nuevos, sin migración.
+
+| | Antes | Después |
+|---|---|---|
+| `availability` | 115,8 ms / 121.296 buffers | **5,5 ms / 783 buffers** |
+| Portal | 125,5 ms | **0,24 ms** |
+
+**Lo que se probó y NO lo arregla** (queda anotado para que no se reintente): partir la política de RLS en dos `PERMISSIVE`; una función `LEAKPROOF` que lea el setting; una cota inferior en `starts_at`; expresar el solapamiento como rango (`&&`); tres índices a medida, incluidos parciales; un CTE `MATERIALIZED` como barrera. Todos siguen eligiendo el GiST, porque contra un costo estimado de 8,4 no se puede competir.
+
+**`resourceBusyIntervals` se midió y NO se tocó**: tiene el mismo tipo de constraint (`WHERE blocks_slot`) pero su `(resource_id, starts_at)` gana igual — 3,8 ms contra 2,2, que es ruido. Mover el filtro ahí habría sido cargo cult.
+
+Falta todavía la medición de carga propiamente dicha:
+
+- `k6` o `artillery` contra `GET /appointments/availability` y `POST /public/:slug/appointments` con concurrencia.
+- Target inicial: p95 < 300ms en availability con 50 RPS. **Necesita saber contra qué hardware**, así que arrastra la decisión del deploy.
 
 ### 9.3 Observabilidad — Sentry hecho (2026-09-07); el resto espera al deploy
 

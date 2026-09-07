@@ -870,6 +870,14 @@ model Appointment {
   payments  AppointmentPayment[]
   reminders AppointmentReminder[]
 
+  /// ⚠️ El constraint `appointments_no_employee_overlap` (EXCLUDE USING gist,
+  /// creado a mano en la migración) es **parcial**: `status <> ALL(cancelados)
+  /// AND deleted_at IS NULL`. Cualquier consulta cuyo `where` implique ese
+  /// predicado lo vuelve elegible, Postgres lo costea en 8,4 y lo recorre
+  /// entero — 115 ms en vez de 5,5 con 219.000 turnos, y **solo con RLS
+  /// activo**, o sea solo en producción. Por eso el filtro por
+  /// `BLOCKING_STATUSES` se aplica en memoria y no en el `where`. Ver
+  /// `appointmentsByEmployee` en `appointments.service.ts`.
   @@index([tenantId, startsAt])
   @@index([employeeId, startsAt])
   @@index([branchId, startsAt])
