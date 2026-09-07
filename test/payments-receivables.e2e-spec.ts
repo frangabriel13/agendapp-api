@@ -11,9 +11,17 @@ import {
   switchPlan,
   type TestApp,
 } from './utils/e2e-app';
+import {
+  enHorarioDe,
+  masDias,
+  masMeses,
+  primerDiaDelMes,
+  proximoLunes,
+  ultimoDiaDelMes,
+} from './utils/fechas';
 
 /** Lunes, bien adelante en el calendario. */
-const LUNES = '2026-09-07';
+const LUNES = proximoLunes();
 const DAY_OF_WEEK = 1;
 
 const PRECIO = 100_000;
@@ -46,12 +54,8 @@ interface ReceivablesPage {
   };
 }
 
-/** `"10:00"` de Buenos Aires como instante ISO (UTC-3 todo el año). */
-const enBuenosAires = (hhmm: string): string => {
-  const [hours, minutes] = hhmm.split(':').map(Number);
-
-  return `${LUNES}T${String(hours + 3).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00.000Z`;
-};
+/** `"10:00"` de Buenos Aires como instante ISO, en el lunes de los tests. */
+const enBuenosAires = (hhmm: string): string => enHorarioDe(LUNES, hhmm);
 
 describe('Lo que falta cobrar (e2e)', () => {
   let app: TestApp;
@@ -235,9 +239,10 @@ describe('Lo que falta cobrar (e2e)', () => {
       .get(`/payments/receivables?${query}`)
       .set(...auth(tenant.accessToken));
 
-  async function septiembre(extra = ''): Promise<ReceivablesPage> {
+  /** El reporte del mes en el que cae el turno de los tests. */
+  async function elMes(extra = ''): Promise<ReceivablesPage> {
     const response = await deuda(
-      `from=2026-09-01&to=2026-09-30${extra}`,
+      `from=${primerDiaDelMes(LUNES)}&to=${ultimoDiaDelMes(LUNES)}${extra}`,
     ).expect(200);
 
     return response.body as ReceivablesPage;
@@ -286,12 +291,12 @@ describe('Lo que falta cobrar (e2e)', () => {
 
   it('lista solo los turnos que deben, con los totales del rango', async () => {
     const debe = await book(luciaId, centroId, '10:00');
-    await pay(debe, 30_000, '2026-09-08T13:00:00.000Z');
+    await pay(debe, 30_000, enHorarioDe(LUNES, '10:00'));
 
     const alDia = await book(luciaId, centroId, '12:00');
-    await pay(alDia, PRECIO, '2026-09-08T13:00:00.000Z');
+    await pay(alDia, PRECIO, enHorarioDe(LUNES, '10:00'));
 
-    const page = await septiembre();
+    const page = await elMes();
 
     expect(page.meta.total).toBe(1);
     expect(page.data.map((row) => row.appointmentId)).toEqual([debe]);
@@ -320,7 +325,7 @@ describe('Lo que falta cobrar (e2e)', () => {
   it('un turno sin ningún cobro debe todo', async () => {
     await book(luciaId, centroId);
 
-    const page = await septiembre();
+    const page = await elMes();
 
     expect(page.data[0]).toMatchObject({
       paidCents: 0,
@@ -333,34 +338,34 @@ describe('Lo que falta cobrar (e2e)', () => {
    *
    * `GET /payments` filtra por `paidAt`, y una deuda no tiene fecha de
    * acreditación —si la tuviera ya no sería una deuda—. La única fecha que
-   * existe es la del turno, así que un turno de septiembre que se cobró en
-   * octubre debe en septiembre, y uno de octubre no debe en septiembre aunque
-   * su seña haya entrado en septiembre.
+   * existe es la del turno, así que un turno de este mes cobrado el que viene
+   * debe en este, y uno del mes que viene no debe en este aunque su seña haya
+   * entrado ahora.
    */
   it('la deuda se ubica por la fecha del turno, no por la del cobro', async () => {
-    const deSeptiembre = await book(luciaId, centroId, '10:00');
-    await pay(deSeptiembre, 20_000, '2026-10-05T13:00:00.000Z');
+    const deEsteMes = await book(luciaId, centroId, '10:00');
+    await pay(deEsteMes, 20_000, enHorarioDe(masMeses(LUNES, 1), '10:00'));
 
-    const deOctubre = await book(luciaId, centroId, '12:00');
-    await pay(deOctubre, 20_000, '2026-09-08T13:00:00.000Z');
-    await moveTo(deOctubre, '2026-10-05T13:00:00.000Z');
+    const delQueViene = await book(luciaId, centroId, '12:00');
+    await pay(delQueViene, 20_000, enHorarioDe(LUNES, '10:00'));
+    await moveTo(delQueViene, enHorarioDe(masMeses(LUNES, 1), '10:00'));
 
-    const page = await septiembre();
+    const page = await elMes();
 
-    expect(page.data.map((row) => row.appointmentId)).toEqual([deSeptiembre]);
+    expect(page.data.map((row) => row.appointmentId)).toEqual([deEsteMes]);
     expect(page.totals.dueCents).toBe(80_000);
   });
 
   it('una devolución vuelve a generar deuda', async () => {
     const turno = await book(luciaId, centroId);
-    await pay(turno, PRECIO, '2026-09-08T13:00:00.000Z');
+    await pay(turno, PRECIO, enHorarioDe(LUNES, '10:00'));
 
     // Al día siguiente se le devuelven 40.000 en efectivo.
-    await pay(turno, 40_000, '2026-09-09T13:00:00.000Z', {
+    await pay(turno, 40_000, enHorarioDe(masDias(LUNES, 1), '10:00'), {
       paymentType: 'REFUND',
     });
 
-    const page = await septiembre();
+    const page = await elMes();
 
     expect(page.data[0]).toMatchObject({
       paidCents: 60_000,
@@ -375,7 +380,7 @@ describe('Lo que falta cobrar (e2e)', () => {
     const turno = await book(luciaId, centroId);
     await setStatus(turno, 'CANCELED_BY_CUSTOMER');
 
-    const page = await septiembre();
+    const page = await elMes();
 
     expect(page.data).toEqual([]);
     expect(page.totals.dueCents).toBe(0);
@@ -385,7 +390,7 @@ describe('Lo que falta cobrar (e2e)', () => {
     const turno = await book(luciaId, centroId);
     await setStatus(turno, 'NO_SHOW');
 
-    const page = await septiembre();
+    const page = await elMes();
 
     expect(page.data.map((row) => row.appointmentId)).toEqual([turno]);
     expect(page.data[0].status).toBe('NO_SHOW');
@@ -395,7 +400,7 @@ describe('Lo que falta cobrar (e2e)', () => {
     const turno = await book(luciaId, centroId);
     await setStatus(turno, 'ATTENDED');
 
-    const page = await septiembre();
+    const page = await elMes();
 
     expect(page.data[0]).toMatchObject({
       status: 'ATTENDED',
@@ -417,7 +422,7 @@ describe('Lo que falta cobrar (e2e)', () => {
       .send({ startsAt: enBuenosAires('15:00') })
       .expect(201);
 
-    const page = await septiembre();
+    const page = await elMes();
 
     expect(page.meta.total).toBe(1);
     expect(page.data[0].appointmentId).not.toBe(original);
@@ -428,22 +433,27 @@ describe('Lo que falta cobrar (e2e)', () => {
 
   /**
    * Mismo criterio que `GET /payments`: los días son días del calendario del
-   * negocio. Armando el rango en UTC, un turno de las 23:00 del 30 caería en
-   * octubre y el mes no cerraría contra lo que el mostrador vio.
+   * negocio. Armando el rango en UTC, un turno de las 23:00 del último día
+   * caería en el mes siguiente y el mes no cerraría contra lo que el mostrador
+   * vio.
    */
   it('un turno de las 23:00 del último día entra en el mes', async () => {
     const turno = await book(luciaId, centroId);
-    // 2026-10-01T02:00Z son las 23:00 del 30/09 en Buenos Aires.
-    await moveTo(turno, '2026-10-01T02:00:00.000Z');
+    // Las 23:00 del último día del mes, en hora de Buenos Aires: en UTC eso ya
+    // es el día 1 del mes siguiente, que es exactamente el error que se busca.
+    await moveTo(turno, enHorarioDe(ultimoDiaDelMes(LUNES), '23:00'));
 
-    expect((await septiembre()).data.map((row) => row.appointmentId)).toEqual([
+    expect((await elMes()).data.map((row) => row.appointmentId)).toEqual([
       turno,
     ]);
 
-    // Una hora después ya es octubre.
-    await moveTo(turno, '2026-10-01T03:00:00.000Z');
+    // Una hora después ya es el mes que viene.
+    await moveTo(
+      turno,
+      enHorarioDe(masDias(ultimoDiaDelMes(LUNES), 1), '00:00'),
+    );
 
-    expect((await septiembre()).data).toEqual([]);
+    expect((await elMes()).data).toEqual([]);
   });
 
   // ── Filtros y paginación ──────────────────────────────────────────────────
@@ -453,13 +463,13 @@ describe('Lo que falta cobrar (e2e)', () => {
     const enPalermo = await book(anaId, palermoId);
 
     expect(
-      (await septiembre(`&branchId=${centroId}`)).data.map(
+      (await elMes(`&branchId=${centroId}`)).data.map(
         (row) => row.appointmentId,
       ),
     ).toEqual([enCentro]);
 
     expect(
-      (await septiembre(`&employeeId=${anaId}`)).data.map(
+      (await elMes(`&employeeId=${anaId}`)).data.map(
         (row) => row.appointmentId,
       ),
     ).toEqual([enPalermo]);
@@ -471,7 +481,7 @@ describe('Lo que falta cobrar (e2e)', () => {
     await book(luciaId, centroId, '12:00');
     await book(luciaId, centroId, '14:00');
 
-    const page = await septiembre('&pageSize=1');
+    const page = await elMes('&pageSize=1');
 
     expect(page.data).toHaveLength(1);
     expect(page.meta).toMatchObject({ total: 3, totalPages: 3 });

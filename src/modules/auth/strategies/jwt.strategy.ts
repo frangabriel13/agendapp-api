@@ -43,11 +43,22 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         id: true,
         tenantId: true,
         role: true,
-        user: { select: { id: true, email: true } },
+        user: { select: { id: true, email: true, tokenVersion: true } },
       },
     });
 
     if (!employee) {
+      throw new UnauthorizedException('La sesión ya no es válida');
+    }
+
+    // El corte por `tokenVersion`. Va acá y no en un guard aparte porque la
+    // fila ya está traída: es una comparación, no una query más.
+    //
+    // Compara estricto contra un número: un token viejo sin el claim entra
+    // como `undefined` y no coincide con ningún entero, así que queda afuera
+    // —que es lo correcto, porque un token sin versión es un token que no se
+    // puede invalidar—.
+    if (employee.user.tokenVersion !== payload.tv) {
       throw new UnauthorizedException('La sesión ya no es válida');
     }
 

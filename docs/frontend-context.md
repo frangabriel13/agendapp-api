@@ -100,6 +100,35 @@ tiempo y ambos disparan un refresh, el segundo mata la sesión. **El interceptor
 tiene que serializar los refresh**: el primero que detecta el 401 hace el refresh,
 los demás esperan ese resultado y reintentan con el token nuevo.
 
+### Cerrar sesión: hay dos, y no hacen lo mismo
+
+| Endpoint | Qué cierra | Token que pide |
+|---|---|---|
+| `POST /auth/logout` | La sesión de **este** dispositivo | El refresh token, en el body |
+| `POST /auth/logout-all` | **Todas** las sesiones del usuario | El access token, en el header |
+
+`POST /auth/logout-all` (204) es el botón de "cerrar sesión en todos los
+dispositivos". Incluye la sesión que lo pide: **después de llamarlo hay que
+mandar al usuario al login, también acá**. No tiene body.
+
+### El access token muere al instante, no cuando expira
+
+El access token lleva adentro un número de versión del usuario que el backend
+compara en cada request. Cuando esa versión sube, **todos los access tokens ya
+emitidos dejan de valer en el request siguiente**, sin esperar los 15 minutos.
+
+Sube en tres momentos, y en los tres el front tiene que mandar al usuario al
+login en vez de intentar un refresh (el refresh también quedó revocado):
+
+- `POST /auth/logout-all`.
+- `PATCH /auth/password` — cambiar la contraseña cierra todas las sesiones,
+  incluida la que la cambió.
+- `POST /auth/reset-password` — el link de "olvidé mi contraseña".
+
+Antes de esto, cambiar la contraseña dejaba vivo el access token hasta un cuarto
+de hora. Si el motivo del cambio era que alguien más entró a la cuenta, ese
+cuarto de hora era de él.
+
 ### Quién soy
 
 `GET /auth/me` devuelve tres bloques:
@@ -120,8 +149,11 @@ el rol (para decidir qué se muestra).
 ### Rutas públicas
 
 Solo estas no requieren token: `/health`, `/auth/register`, `/auth/login`,
-`/auth/refresh`, `/auth/logout` y `POST /employees/activate`. **Todo lo demás
-responde 401 sin `Authorization`.**
+`/auth/refresh`, `/auth/logout`, `POST /employees/activate` y el portal público
+(`/public/:slug/...`). **Todo lo demás responde 401 sin `Authorization`.**
+
+`POST /auth/logout-all` **sí** pide token, al revés que `/auth/logout`: cerrar
+todas las sesiones de una cuenta es algo que solo puede pedir su dueño.
 
 ### Contraseñas
 
@@ -251,8 +283,25 @@ sencillamente no existe.
 
 Dos ventanas generales: 10 requests por segundo y 100 por minuto. Al pasarse, **429**.
 
-**`/auth/register`, `/auth/login` y `PATCH /auth/password` son más estrictos: 5
-por minuto.** Probando el login a mano se llega al 429 enseguida — no es un bug.
+Además, estos endpoints tienen su propio tope, más bajo que el general:
+
+| Endpoint | Tope | Por qué |
+|---|---|---|
+| `/auth/register`, `/auth/login`, `/auth/reset-password`, `/auth/forgot-password`, `/auth/verify-email`, `/auth/verify-email/resend`, `PATCH /auth/password`, `POST /auth/logout-all` | 5 por minuto | Tocan una credencial o canjean un token de un solo uso |
+| `POST /employees/activate` | 5 por minuto | Es un canje de token igual que el reset |
+| `POST /auth/refresh`, `POST /auth/logout` | 20 por minuto | Verifican un secreto con argon2 |
+| `POST /employees`, `POST /employees/:id/invitation` | 10 por minuto | Mandan un mail a una casilla ajena |
+| `POST /appointments/:id/payments/checkout` | 20 por minuto | Le pega a Mercado Pago |
+| `POST /public/:slug/appointments` | 3 por minuto, 15 por hora | Cada reserva ocupa un hueco de la agenda |
+| `GET /public/:slug/...` | 5 por segundo, 60 por minuto | Público y sin nadie identificado |
+
+Probando el login a mano se llega al 429 enseguida — no es un bug.
+
+⚠️ **Los 10 por minuto de invitaciones se pueden alcanzar cargando un equipo.**
+Si la pantalla de alta de empleados permite invitar a varios de una, conviene
+espaciarlos o mostrar el `Retry-After-short` en vez de un error genérico: el
+tope existe para que nuestro dominio no termine en listas negras, no para
+estorbar.
 
 Headers expuestos por CORS y legibles desde el navegador:
 
@@ -271,6 +320,11 @@ hay que cambiarlo por `Retry-After-short`.
 
 `Retry-After-*` solo viaja en las respuestas **429**; los `X-RateLimit-*` van en
 todas.
+
+El conteo es **por IP y por endpoint**, y cuenta **pedidos, no aciertos**: cinco
+logins fallados gastan el presupuesto igual que cinco exitosos. Que sea por IP
+tiene una consecuencia visible: varias personas del mismo local comparten el
+mismo presupuesto.
 
 El límite del **`POST` de reserva del portal público** es aparte y mucho más
 duro: **3 por minuto y 15 por hora**. Cada reserva le ocupa un hueco al negocio,

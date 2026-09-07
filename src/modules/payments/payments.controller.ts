@@ -26,6 +26,8 @@ import {
   PaymentResponseDto,
   RecordManualPaymentDto,
 } from './dto/payment.dto';
+import { Throttle } from '@nestjs/throttler';
+import { PROVIDER_THROTTLE } from '../../config/throttler.config';
 import { PaymentsService } from './payments.service';
 
 /**
@@ -59,6 +61,7 @@ export class PaymentsController {
   }
 
   @Post('checkout')
+  @Throttle(PROVIDER_THROTTLE)
   @ApiOperation({
     summary: 'Genera el link de pago online',
     description:

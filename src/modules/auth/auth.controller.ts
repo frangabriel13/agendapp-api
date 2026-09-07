@@ -20,6 +20,10 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import {
+  CREDENTIALS_THROTTLE,
+  TOKEN_EXCHANGE_THROTTLE,
+} from '../../config/throttler.config';
 import { Public } from '../../common/decorators/public.decorator';
 import { AuthService } from './auth.service';
 import { CurrentUser } from './decorators/current-user.decorator';
@@ -35,9 +39,6 @@ import {
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterDto } from './dto/register.dto';
 import type { AuthenticatedUser } from './types/jwt-payload';
-
-/** Límite extra para los endpoints que aceptan credenciales. */
-const CREDENTIALS_THROTTLE = { short: { limit: 5, ttl: 60_000 } };
 
 @ApiTags('auth')
 @Controller('auth')
@@ -78,6 +79,7 @@ export class AuthController {
 
   @Post('refresh')
   @Public()
+  @Throttle(TOKEN_EXCHANGE_THROTTLE)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Renueva el access token',
@@ -92,6 +94,7 @@ export class AuthController {
 
   @Post('logout')
   @Public()
+  @Throttle(TOKEN_EXCHANGE_THROTTLE)
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary: 'Cierra la sesión',
@@ -103,6 +106,27 @@ export class AuthController {
   @ApiNoContentResponse()
   logout(@Body() dto: RefreshTokenDto): Promise<void> {
     return this.authService.logout(dto.refreshToken);
+  }
+
+  @Post('logout-all')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Throttle(CREDENTIALS_THROTTLE)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Cierra todas las sesiones del usuario',
+    description:
+      'El botón de "cerrar sesión en todos los dispositivos". Revoca los ' +
+      'refresh tokens y sube la versión del usuario, así los access tokens ya ' +
+      'emitidos dejan de valer al instante y no cuando expiren. ' +
+      'Incluye la sesión que hace el pedido: después de esto hay que volver a ' +
+      'iniciar sesión, también en este dispositivo. ' +
+      'Este SÍ pide token, al revés de `/auth/logout`: cerrar todas las ' +
+      'sesiones de una cuenta es algo que solo puede pedir su dueño.',
+  })
+  @ApiNoContentResponse()
+  @ApiUnauthorizedResponse({ description: 'Token ausente, vencido o inválido' })
+  logoutAll(@CurrentUser() user: AuthenticatedUser): Promise<void> {
+    return this.authService.closeAllSessions(user.userId);
   }
 
   @Get('me')

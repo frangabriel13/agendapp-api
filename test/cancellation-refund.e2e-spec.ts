@@ -16,11 +16,7 @@ import {
   switchPlan,
   type TestApp,
 } from './utils/e2e-app';
-
-const MS_PER_DAY = 24 * 60 * 60 * 1_000;
-
-/** El seed deja el negocio en Buenos Aires, que es UTC-3 todo el año. */
-const BA_OFFSET_HOURS = 3;
+import { aDiasDeHoy, enHorarioDe } from './utils/fechas';
 
 const PRECIO = 100_000;
 const SEÑA = 30_000;
@@ -33,32 +29,6 @@ const POLITICA_POR_DEFECTO_HORAS = 24;
  * **fuera** de la política sin tocar su horario.
  */
 const POLITICA_MAXIMA_HORAS = 720;
-
-/**
- * Las fechas van contra el reloj, no fijas.
- *
- * Acá no es una preferencia: lo que se prueba es con cuánta anticipación se
- * canceló, que es una distancia entre dos instantes. Un turno escrito a mano
- * ("el lunes 7") hoy está a diez días y en tres semanas está en el pasado: los
- * tests de "canceló en término" pasarían hasta esa fecha y empezarían a fallar
- * solos, sin que nadie haya tocado nada.
- */
-function businessDate(daysAhead: number): string {
-  const instant = new Date(
-    Date.now() - BA_OFFSET_HOURS * 60 * 60 * 1_000 + daysAhead * MS_PER_DAY,
-  );
-
-  return instant.toISOString().slice(0, 10);
-}
-
-/** `"10:00"` de ese día en Buenos Aires, como instante ISO. */
-function at(dateOnly: string, hhmm: string): string {
-  const [hours, minutes] = hhmm.split(':').map(Number);
-
-  return `${dateOnly}T${String(hours + BA_OFFSET_HOURS).padStart(2, '0')}:${String(
-    minutes,
-  ).padStart(2, '0')}:00.000Z`;
-}
 
 interface RefundDto {
   type: CancellationRefundType;
@@ -98,7 +68,7 @@ describe('Cancelación y devolución (e2e)', () => {
   let customerId: string;
 
   /** Bien adelante: así "canceló en término" da en término con el default. */
-  const DIA = businessDate(10);
+  const DIA = aDiasDeHoy(10);
 
   beforeAll(async () => {
     ({ app, prisma, payments: sandbox } = await createTestApp());
@@ -228,7 +198,7 @@ describe('Cancelación y devolución (e2e)', () => {
         employeeId,
         customerId,
         serviceIds: [service],
-        startsAt: at(DIA, hhmm),
+        startsAt: enHorarioDe(DIA, hhmm),
       })
       .expect(201);
 

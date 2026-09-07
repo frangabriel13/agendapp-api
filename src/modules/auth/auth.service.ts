@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import {
   EmployeeRole,
+  type Prisma,
   SubscriptionStatus,
   UserTokenPurpose,
 } from '@prisma/client';
@@ -103,7 +104,7 @@ export class AuthService {
           lastName: dto.lastName,
           phone: dto.phone ?? null,
         },
-        select: { id: true },
+        select: { id: true, tokenVersion: true },
       });
 
       const tenant = await tx.tenant.create({
@@ -155,7 +156,7 @@ export class AuthService {
       firstName: dto.firstName,
     });
 
-    return this.issueTokens(user.id, employee);
+    return this.issueTokens(user, employee);
   }
 
   async login(dto: LoginDto): Promise<AuthTokensDto> {
@@ -163,6 +164,7 @@ export class AuthService {
       where: { email: dto.email, deletedAt: null },
       select: {
         id: true,
+        tokenVersion: true,
         passwordHash: true,
         // Prisma no admite `where` sobre una relación to-one: los descartes
         // (empleado borrado, inactivo o negocio dado de baja) se hacen abajo.
@@ -231,7 +233,7 @@ export class AuthService {
       role: employee.role,
     });
 
-    return this.issueTokens(user.id, employee);
+    return this.issueTokens(user, employee);
   }
 
   /** Rota el refresh token y emite un access token nuevo. */
@@ -247,20 +249,51 @@ export class AuthService {
         user: { deletedAt: null },
         tenant: { deletedAt: null },
       },
-      select: { id: true, tenantId: true, role: true },
+      select: {
+        id: true,
+        tenantId: true,
+        role: true,
+        user: { select: { id: true, tokenVersion: true } },
+      },
     });
 
     if (!employee) {
       throw new UnauthorizedException('La sesión ya no es válida');
     }
 
-    const accessToken = await this.signAccessToken(userId, employee);
+    const accessToken = await this.signAccessToken(employee.user, employee);
 
     return this.buildTokensResponse(accessToken, refreshToken);
   }
 
   async logout(presentedToken: string): Promise<void> {
     await this.refreshTokens.revokeSession(presentedToken);
+  }
+
+  /**
+   * Cierra **todas** las sesiones del usuario, incluida la que lo pide.
+   *
+   * Las dos mitades son necesarias y ninguna alcanza sola:
+   *
+   * - Revocar los refresh tokens corta la renovación, pero el access token ya
+   *   emitido sigue siendo válido hasta que expira. En esa ventana —hasta 15
+   *   minutos— quien te robó la sesión sigue operando.
+   * - Subir la `tokenVersion` invalida los access tokens al instante, pero sin
+   *   revocar los refresh el ladrón se emite uno nuevo y sigue como si nada.
+   *
+   * Por eso van juntas y por eso están acá y no en dos llamadas separadas en
+   * cada caller: la mitad que se olvide es un agujero que no da ningún síntoma.
+   */
+  async closeAllSessions(
+    userId: string,
+    client: Prisma.TransactionClient = this.prisma,
+  ): Promise<void> {
+    await client.user.update({
+      where: { id: userId },
+      data: { tokenVersion: { increment: 1 } },
+    });
+
+    await this.refreshTokens.revokeAllForUser(userId, client);
   }
 
   async me(current: AuthenticatedUser): Promise<MeResponseDto> {
@@ -352,7 +385,7 @@ export class AuthService {
       data: { passwordHash },
     });
 
-    await this.refreshTokens.revokeAllForUser(user.id);
+    await this.closeAllSessions(user.id);
   }
 
   /**
@@ -414,7 +447,7 @@ export class AuthService {
       UserTokenPurpose.PASSWORD_RESET,
       async (tx, userId) => {
         await tx.user.update({ where: { id: userId }, data: { passwordHash } });
-        await this.refreshTokens.revokeAllForUser(userId, tx);
+        await this.closeAllSessions(userId, tx);
       },
     );
   }
@@ -482,24 +515,34 @@ export class AuthService {
   }
 
   private async issueTokens(
-    userId: string,
+    user: { id: string; tokenVersion: number },
     employee: { id: string; tenantId: string; role: EmployeeRole },
   ): Promise<AuthTokensDto> {
-    const accessToken = await this.signAccessToken(userId, employee);
-    const refreshToken = await this.refreshTokens.issue(userId);
+    const accessToken = await this.signAccessToken(user, employee);
+    const refreshToken = await this.refreshTokens.issue(user.id);
 
     return this.buildTokensResponse(accessToken, refreshToken);
   }
 
+  /**
+   * La `tokenVersion` entra por parámetro y no con una query adentro.
+   *
+   * Los tres lugares que firman —registro, login y refresh— ya traen la fila
+   * del usuario, así que buscarla de nuevo sería una query de más en el camino
+   * caliente del login. Y al ser un parámetro obligatorio, el compilador no
+   * deja agregar un cuarto lugar que firme sin decidir qué versión pone: un
+   * token con la versión equivocada no se invalidaría cuando toca.
+   */
   private signAccessToken(
-    userId: string,
+    user: { id: string; tokenVersion: number },
     employee: { id: string; tenantId: string; role: EmployeeRole },
   ): Promise<string> {
     const payload: JwtPayload = {
-      sub: userId,
+      sub: user.id,
       tenantId: employee.tenantId,
       employeeId: employee.id,
       role: employee.role,
+      tv: user.tokenVersion,
     };
 
     return this.jwt.signAsync(payload);

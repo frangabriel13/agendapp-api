@@ -1,6 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
-import { RATE_LIMIT_HEADERS, THROTTLERS } from '../src/config/throttler.config';
+import {
+  BOOKING_THROTTLE,
+  CREDENTIALS_THROTTLE,
+  MAIL_THROTTLE,
+  PROVIDER_THROTTLE,
+  RATE_LIMIT_HEADERS,
+  THROTTLERS,
+  TOKEN_EXCHANGE_THROTTLE,
+} from '../src/config/throttler.config';
 import type { PrismaService } from '../src/prisma/prisma.service';
 import {
   auth,
@@ -13,35 +21,22 @@ import {
   TEST_PASSWORD,
   type TestApp,
 } from './utils/e2e-app';
+import { aDiasDeHoy, enHorarioDe } from './utils/fechas';
 
-const MS_PER_DAY = 24 * 60 * 60 * 1_000;
-const BA_OFFSET_HOURS = 3;
-
-/** Los que declara `THROTTLERS`, para no repetirlos escritos a mano. */
+/**
+ * Todos los límites salen de `throttler.config.ts`, ninguno escrito a mano.
+ *
+ * Es la diferencia entre un test que verifica el límite y uno que verifica el
+ * número que alguien copió: si mañana el tope de logins pasa a 3, este archivo
+ * prueba 3 sin que nadie se acuerde de venir a tocarlo.
+ */
 const GLOBAL_SHORT = THROTTLERS.find((t) => t.name === 'short')!.limit;
 const GLOBAL_LONG = THROTTLERS.find((t) => t.name === 'long')!.limit;
-
-/** `CREDENTIALS_THROTTLE` en `auth.controller.ts`. */
-const LOGINS_POR_MINUTO = 5;
-
-/** El `short` de `BOOKING_THROTTLE` en `public.controller.ts`. */
-const RESERVAS_POR_MINUTO = 3;
-
-function businessDate(daysAhead: number): string {
-  const instant = new Date(
-    Date.now() - BA_OFFSET_HOURS * 60 * 60 * 1_000 + daysAhead * MS_PER_DAY,
-  );
-
-  return instant.toISOString().slice(0, 10);
-}
-
-function at(dateOnly: string, hhmm: string): string {
-  const [hours, minutes] = hhmm.split(':').map(Number);
-
-  return `${dateOnly}T${String(hours + BA_OFFSET_HOURS).padStart(2, '0')}:${String(
-    minutes,
-  ).padStart(2, '0')}:00.000Z`;
-}
+const LOGINS_POR_MINUTO = CREDENTIALS_THROTTLE.short.limit;
+const RESERVAS_POR_MINUTO = BOOKING_THROTTLE.short.limit;
+const RENOVACIONES_POR_MINUTO = TOKEN_EXCHANGE_THROTTLE.short.limit;
+const MAILS_POR_MINUTO = MAIL_THROTTLE.short.limit;
+const CHECKOUTS_POR_MINUTO = PROVIDER_THROTTLE.short.limit;
 
 /**
  * El rate limiting, con el guard **prendido**.
@@ -64,7 +59,7 @@ describe('Rate limiting (e2e)', () => {
   let branchId: string;
   let serviceId: string;
 
-  const DIA = businessDate(10);
+  const DIA = aDiasDeHoy(10);
 
   beforeAll(async () => {
     ({ app, prisma } = await createTestApp({ throttling: true }));
@@ -165,18 +160,25 @@ describe('Rate limiting (e2e)', () => {
       .send({
         branchId,
         serviceIds: [serviceId],
-        startsAt: at(DIA, hhmm),
+        startsAt: enHorarioDe(DIA, hhmm),
         customer: { firstName: 'María', phone: '11 5555-1234' },
       });
 
   beforeEach(async () => {
+    // Las dos llamadas hacen falta y por motivos distintos.
+    //
+    // Esta, porque el armado usa rutas que algún test agota: `setUpPortal`
+    // invita a un empleado, y el test que agota el tope de invitaciones dejaría
+    // al armado del test siguiente contra la pared.
+    resetThrottling(app);
+
     await resetDatabase(prisma);
     tenant = await registerTenant(app);
     await switchPlan(prisma, tenant.tenantId, 'avanzado');
     await setUpPortal();
 
-    // Al final y no al principio: lo que gastó el armado no puede contarle al
-    // test, y el armado son ocho pedidos.
+    // Y esta, porque lo que gastó el armado no puede contarle al test: son
+    // ocho pedidos, más de lo que vale cualquiera de los topes de acá.
     resetThrottling(app);
   });
 
@@ -397,6 +399,111 @@ describe('Rate limiting (e2e)', () => {
 
       expect(emitidos).toContain('retry-after-short');
       expect(expuestos).toEqual(expect.arrayContaining(emitidos));
+    });
+  });
+  // ── La pasada endpoint por endpoint ───────────────────────────────────────
+
+  /**
+   * Los límites que salieron de revisar la API ruta por ruta (§9.5).
+   *
+   * El criterio no fue "cuánto cuesta servirlo" sino **quién paga si alguien
+   * abusa**: el servidor cuando hay un argon2 de por medio, la reputación del
+   * dominio cuando sale un mail, y la cuota de Mercado Pago cuando se le pega
+   * a ellos. Los tres son costos que el límite global de 100/min no acota.
+   *
+   * Todos gastan el presupuesto con pedidos que fallan, y no es una comodidad
+   * del test: el límite cuenta **pedidos**, no aciertos. Si contara solo los
+   * que salen bien, no serviría para lo único que tiene que servir.
+   */
+  describe('Endpoints revisados', () => {
+    const renovar = (): request.Test =>
+      request(server())
+        .post('/auth/refresh')
+        .send({ refreshToken: 'no.sirve' });
+
+    const activar = (): request.Test =>
+      request(server())
+        .post('/employees/activate')
+        .send({ token: 'no-sirve', password: TEST_PASSWORD });
+
+    const invitar = (): request.Test =>
+      request(server())
+        .post('/employees')
+        .set(...asOwner())
+        .send({ email: 'no-es-un-mail' });
+
+    const pagar = (): request.Test =>
+      request(server())
+        .post(`/appointments/${randomUUID()}/payments/checkout`)
+        .set(...asOwner())
+        .send({});
+
+    /**
+     * Público y con argon2 adentro: `RefreshTokenService` hashea el secreto
+     * presentado para compararlo. Sin tope propio, el global deja pasar cien
+     * por minuto por IP y cada uno cuesta un hash — el token no se adivina,
+     * pero la CPU se gasta igual.
+     */
+    it('renovar la sesión tiene su propio tope', async () => {
+      for (let i = 0; i < RENOVACIONES_POR_MINUTO; i += 1) {
+        await renovar().expect(401);
+      }
+
+      await renovar().expect(429);
+    });
+
+    /**
+     * Es un canje de token de un solo uso hecho público, o sea la misma forma
+     * que `/auth/reset-password`. Tiene el mismo tope y por el mismo motivo:
+     * sin él, el link de invitación se puede intentar adivinar cien veces por
+     * minuto y cada intento cuesta un argon2.
+     */
+    it('activar una invitación tiene el tope de una credencial', async () => {
+      for (let i = 0; i < LOGINS_POR_MINUTO; i += 1) {
+        await activar().expect(400);
+      }
+
+      await activar().expect(429);
+    });
+
+    /**
+     * Crear un empleado manda un mail a una casilla ajena firmado por nuestro
+     * dominio. El `@Roles` limita **quién** puede hacerlo, no **cuántas veces**:
+     * son dos preguntas distintas y hasta ahora solo estaba contestada una.
+     */
+    it('invitar empleados tiene el tope de los envíos de mail', async () => {
+      for (let i = 0; i < MAILS_POR_MINUTO; i += 1) {
+        await invitar().expect(400);
+      }
+
+      await invitar().expect(429);
+    });
+
+    /** Cada checkout crea una preferencia del lado de Mercado Pago. */
+    it('el checkout tiene su propio tope', async () => {
+      for (let i = 0; i < CHECKOUTS_POR_MINUTO; i += 1) {
+        await pagar().expect(404);
+      }
+
+      await pagar().expect(429);
+    });
+
+    /**
+     * El tope propio reemplaza al `short` global en esa ruta, no se suma.
+     *
+     * Importa porque el global es de 10 por **segundo**: si se sumaran, un tope
+     * de 20 por minuto sería inalcanzable —saltaría antes el de un segundo— y
+     * el test de arriba estaría probando el límite equivocado.
+     */
+    it('el tope propio pisa al global, no se apila', async () => {
+      const response = await renovar().expect(401);
+
+      expect(Number(response.headers['x-ratelimit-limit-short'])).toBe(
+        RENOVACIONES_POR_MINUTO,
+      );
+      expect(Number(response.headers['x-ratelimit-limit-long'])).toBe(
+        GLOBAL_LONG,
+      );
     });
   });
 });

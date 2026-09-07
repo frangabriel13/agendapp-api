@@ -76,9 +76,21 @@ model User {
   phone           String?   @db.VarChar(30)
   emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz
   lastLoginAt     DateTime? @map("last_login_at") @db.Timestamptz
-  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz
-  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz
+
+  /// Corta todos los access tokens vivos del usuario de una.
+  ///
+  /// El access token lleva este número adentro y `JwtStrategy` lo compara
+  /// contra esta columna en cada request. Subirlo en uno deja afuera a todo
+  /// token ya emitido sin tocar el `JWT_SECRET` ni a ningún otro usuario.
+  ///
+  /// Hace falta porque revocar los refresh tokens no alcanza: el access sigue
+  /// siendo válido hasta que expira, y en esa ventana quien te robó la sesión
+  /// sigue operando aunque le hayas cambiado la contraseña.
+  tokenVersion Int @default(0) @map("token_version")
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz
 
   refreshTokens       RefreshToken[]
   tokens              UserToken[]

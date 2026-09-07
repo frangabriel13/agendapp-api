@@ -11,9 +11,13 @@ import {
   type RegisteredTenant,
   type TestApp,
 } from './utils/e2e-app';
+import { enHorarioDe, masDias, proximoLunes } from './utils/fechas';
 
 /** Lunes. El horario de atención se carga solo para este día de la semana. */
-const LUNES = '2026-09-07';
+const LUNES = proximoLunes();
+
+/** El martes: la sucursal no abre, y eso es lo que prueban varios tests. */
+const MARTES = masDias(LUNES, 1);
 const DAY_OF_WEEK = 1;
 
 interface AvailabilityResponse {
@@ -35,9 +39,7 @@ interface AvailabilityResponse {
  * en `America/Argentina/Buenos_Aires`, que es UTC-3 todo el año.
  */
 function enBuenosAires(hhmm: string, date = LUNES): string {
-  const [hours, minutes] = hhmm.split(':').map(Number);
-
-  return `${date}T${String(hours + 3).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00.000Z`;
+  return enHorarioDe(date, hhmm);
 }
 
 /** Los slots como `"09:00"`, para poder leer de un vistazo qué devolvió. */
@@ -355,7 +357,7 @@ describe('Disponibilidad (e2e)', () => {
   describe('Días que el local no abre', () => {
     it('un día de descanso viene marcado como cerrado', async () => {
       // El martes no está entre los días abiertos.
-      const response = await availability({ date: '2026-09-08' });
+      const response = await availability({ date: MARTES });
 
       expect(response).toMatchObject({ branchClosed: true, slots: [] });
     });
@@ -723,7 +725,7 @@ describe('Disponibilidad (e2e)', () => {
       await assignService(depilacion, [{ employeeId: ana, branchId }]);
 
       // El martes la sucursal no abre.
-      const respuesta = await availability({ date: '2026-09-08' }, 200, [
+      const respuesta = await availability({ date: MARTES }, 200, [
         serviceId,
         depilacion,
       ]);
