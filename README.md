@@ -419,6 +419,75 @@ Queda como aviso para revisar de tanto en tanto.
 
 ---
 
+## Imagen de producción
+
+`docker build -t agendapp-api .` construye la imagen que atiende requests.
+Multi-stage, corre como el usuario `node` (uid 1000), sin Swagger y con
+healthcheck contra `/health`.
+
+```bash
+docker build -t agendapp-api .
+
+docker run --rm -p 3001:3001 \
+  -e DATABASE_URL='postgresql://agendapp_app:...@host:5432/agendapp' \
+  -e JWT_SECRET='...' \
+  -e CORS_ORIGINS='https://tudominio.com' \
+  agendapp-api
+```
+
+### Las migraciones NO van en el arranque
+
+Se corren con **la misma imagen** pero con otro comando y **otra
+`DATABASE_URL`**, la del rol dueño:
+
+```bash
+docker run --rm -e DATABASE_URL='<la del rol DUEÑO>' \
+  agendapp-api npx prisma migrate deploy
+```
+
+No es una preferencia de estilo: la app corre con el rol restringido de RLS,
+que **no tiene permisos de DDL**. No es que no convenga migrar desde la app —
+no puede. En Railway, Render o Fly esto va como *release command* /
+*pre-deploy*; en un VPS, como un paso del script de deploy antes de levantar el
+contenedor nuevo.
+
+### Antes del primer deploy, una sola vez
+
+1. `RLS_ROLE_PASSWORD='...' npm run db:rls-role` contra la base de producción
+   (ver la sección de RLS más abajo).
+2. La `DATABASE_URL` de la app apunta a **ese** rol. Con el dueño, las 29
+   políticas de RLS están puestas y no cortan nada, sin ningún error que avise.
+3. `NODE_ENV=production` (la imagen ya lo trae) para que Swagger no se publique.
+4. `CORS_ORIGINS` con el dominio real. Nunca `*`.
+5. Con `MAIL_PROVIDER=resend` y `PAYMENT_PROVIDER=mercadopago`, sus claves:
+   `envSchema` las exige al arrancar, no en el primer uso.
+
+### Sobre el tamaño (~550 MB)
+
+Casi todo es `node_modules`, y el grueso viene de Prisma: `@prisma/client`
+declara `prisma` y `typescript` como **peerDependencies**, y npm las instala
+igual con `--omit=dev`. El CLI completo termina en el árbol de producción lo
+quiera uno o no — `--omit=peer` baja unos 20 MB y `prisma` sigue ahí. La
+contra tiene su lado bueno: como el CLI está, no hace falta una segunda imagen
+para migrar.
+
+### Qué se verificó de esta imagen
+
+No es un Dockerfile escrito de memoria. Construido y corrido contra el Postgres
+del compose:
+
+- `prisma migrate deploy` aplica las 18 migraciones desde la imagen.
+- Arranca con el **rol restringido** y el healthcheck da `healthy`.
+- Dos negocios registrados por la API no se ven entre sí (RLS activo de verdad).
+- `/api` responde 404: Swagger no se publica.
+- Helmet pone sus headers (CSP, HSTS, `X-Frame-Options`, `nosniff`).
+- `docker stop` sale en **0 s con exit 0**, no a los 10 s con SIGKILL. Eso es
+  `enableShutdownHooks()` en `main.ts`: sin ese handler, un Node que es PID 1
+  ignora `SIGTERM` — medido, un contenedor sin handler tarda los 10 s y sale
+  137.
+
+---
+
 ## Aislamiento entre negocios (RLS)
 
 Cada negocio ve solo lo suyo, y eso está defendido **dos veces**:

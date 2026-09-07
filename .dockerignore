@@ -1,0 +1,52 @@
+# Lo que NO viaja al contexto de build.
+#
+# Esto no es una optimización: sin la primera sección, `.env` —con la
+# DATABASE_URL, el JWT_SECRET y las credenciales de Mercado Pago— termina
+# adentro de la imagen. Una imagen se comparte, se publica en un registry y
+# queda en el caché de capas de cualquiera que la baje.
+
+# --- Secretos -----------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Lo que se reconstruye adentro --------------------------------------
+# `node_modules` local es de Linux/WSL y puede tener binarios que no sirven en
+# la imagen; además son cientos de megas que se copian para después pisarse.
+node_modules
+dist
+coverage
+
+# --- Git y herramientas -------------------------------------------------
+.git
+.gitignore
+.github
+.vscode
+.idea
+.claude
+CLAUDE.md
+
+# --- Tests y desarrollo --------------------------------------------------
+# No van a la imagen de producción, pero sí se necesitan en CI: el build de la
+# imagen no corre tests, los corre el workflow antes.
+test
+**/*.spec.ts
+**/*.e2e-spec.ts
+jest.config.*
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# --- Documentación -------------------------------------------------------
+docs
+README.md
+*.md
+!prisma/**/*.md
+
+# --- Basura del sistema --------------------------------------------------
+*.log
+npm-debug.log*
+.DS_Store
+*Zone.Identifier
