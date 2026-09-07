@@ -1490,6 +1490,24 @@ export class AppointmentsService {
   /**
    * Los turnos que ya tiene cada uno. Se piden **sin filtrar por sucursal**: si
    * alguien está atendiendo en Palermo, no puede estar también en Centro.
+   *
+   * ⚠️ **El filtro de estado va en memoria y NO en el `where`, a propósito.**
+   * Parece una desprolijidad y es lo contrario: puesto en el `where`, la
+   * consulta pasa a implicar el predicado parcial del índice GiST del
+   * constraint anti-doble-booking (`status <> ALL(cancelados) AND deleted_at IS
+   * NULL`). Ahí Postgres cree que ese índice contiene solo las filas que
+   * busca, lo costea en 8 y lo elige — pero contiene **todos** los turnos no
+   * cancelados del sistema, así que lo recorre entero.
+   *
+   * Medido con 219.000 turnos: **115 ms y 121.296 buffers con el filtro en el
+   * `where`, 5,5 ms y 783 buffers sin él**. Y crece con el historial, porque el
+   * plan malo recorre la tabla completa.
+   *
+   * Lo peor es que **solo pasa con RLS activo**, o sea solo en producción: con
+   * el rol dueño el planificador elige bien y nadie se entera. Es la misma
+   * trampa que hace que RLS no proteja en desarrollo, del otro lado.
+   *
+   * El día trae un puñado de filas, así que descartarlas acá no cuesta nada.
    */
   private async appointmentsByEmployee(
     employeeIds: string[],
@@ -1500,16 +1518,24 @@ export class AppointmentsService {
     const appointments = await this.prisma.scoped.appointment.findMany({
       where: {
         employeeId: { in: employeeIds },
-        status: { in: [...BLOCKING_STATUSES] },
         ...(excludeAppointmentId === undefined
           ? {}
           : { id: { not: excludeAppointmentId } }),
         ...overlapping(dayStart, dayEnd),
       },
-      select: { employeeId: true, startsAt: true, endsAt: true },
+      select: {
+        employeeId: true,
+        startsAt: true,
+        endsAt: true,
+        status: true,
+      },
     });
 
-    return groupBy(appointments, (row) => row.employeeId, toRowInterval);
+    return groupBy(
+      appointments.filter((row) => BLOCKING_STATUSES.includes(row.status)),
+      (row) => row.employeeId,
+      toRowInterval,
+    );
   }
 
   /**

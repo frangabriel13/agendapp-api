@@ -376,17 +376,23 @@ export class PublicService {
     }
 
     const date = zonedDateOnly(startsAt, timezone);
-    const booked = await this.prisma.scoped.appointment.findMany({
+    // ⚠️ El filtro de estado va en memoria y no en el `where`, por el mismo
+    // motivo que en `appointmentsByEmployee`: en el `where` la consulta implica
+    // el predicado parcial del índice GiST del anti-doble-booking, Postgres lo
+    // costea en 8 y lo recorre entero. Con RLS activo —o sea en producción—
+    // eso son 115 ms en vez de 5. Ver el comentario largo allá.
+    const rows = await this.prisma.scoped.appointment.findMany({
       where: {
         employeeId: { in: sorted },
-        status: { in: [...BLOCKING_STATUSES] },
         startsAt: {
           gte: zonedWallTimeToUtc(date, 0, timezone),
           lt: zonedWallTimeToUtc(date, MINUTES_PER_DAY, timezone),
         },
       },
-      select: { employeeId: true },
+      select: { employeeId: true, status: true },
     });
+
+    const booked = rows.filter((row) => BLOCKING_STATUSES.includes(row.status));
 
     // Se cuenta en memoria y no con un `groupBy`: son los turnos de un día de
     // un puñado de personas, y el `groupBy` no devuelve fila para quien tiene
