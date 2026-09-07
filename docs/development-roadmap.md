@@ -1051,7 +1051,7 @@ Flujos críticos:
 - ✅ **Rate limiting** — `throttling.e2e-spec.ts`, con el guard prendido. Encontró otro: `RATE_LIMIT_HEADERS` declaraba `Retry-After` a secas, que no existe (el real es `Retry-After-short`), así que CORS no exponía el único dato accionable de un 429.
 - ✅ **Aislamiento entre tenants** sobre los dominios nuevos — cubierto por `rls.e2e-spec.ts` (Fase 8.5) y por los tests de aislamiento de cada módulo.
 - ✅ **Las fechas de los tests, contra el reloj** (2026-09-07) — `test/utils/fechas.ts`. Siete specs tenían escrito `const LUNES = '2026-09-07'`, elegido cuando esa fecha era futura. Ese día el reloj la alcanzó y dos tests de cancelación empezaron a fallar solos: el turno quedó a menos de 24 h y después en el pasado, o sea fuera de la política. El commit que rompió la suite no fue el que la rompió, que es el peor síntoma que puede tener un test. Ahora todo sale de `proximoLunes()` y se deriva de ahí; `test/fechas.e2e-spec.ts` corre el reloj dos años, un día por vez y a dos horas del día distintas, para fijar los invariantes (siempre lunes, a 8–21 días, nunca después del 28 para que la serie mensual exista). Verificado mutando el helper: las dos mutaciones caen.
-- Registro → primer turno → pago de seña → atención (el recorrido entero en un solo test; hoy está cubierto por tramos).
+- ✅ **Registro → primer turno → seña → atención** (2026-09-07) — `customer-journey.e2e-spec.ts`. Un solo `it` de ocho pasos, y es un solo `it` a propósito: partirlo en pasos independientes sería volver a tener tramos. Todo lo que hace ya está cubierto por otros archivos; lo que no estaba cubierto son las **costuras** — que el `appointmentId` del portal sea el que acepta el checkout, que el `providerPaymentId` del sandbox sea el que el webhook busca, que el turno nacido desde el portal sin sesión aparezca en la agenda del negocio correcto. Verificado mutando: si acreditar la seña deja de confirmar el turno, el test cae.
 
 ### 9.2 Carga
 
@@ -1062,12 +1062,19 @@ Flujos críticos:
 
 Target inicial: p95 < 300ms en availability con 50 RPS.
 
-### 9.3 Observabilidad
+### 9.3 Observabilidad — Sentry hecho (2026-09-07); el resto espera al deploy
 
-- **Sentry** para excepciones.
-- **OpenTelemetry** → traces a Tempo/Jaeger.
+- ✅ **Sentry**, cableado y **apagado por defecto**. Sin `SENTRY_DSN` no se llama a `init` y el SDK entero queda en no-op: eso cubre desarrollo y los e2e sin ninguna condición especial. Se prende en producción poniendo la variable.
+  - `src/instrument.ts` va **primero en `main.ts`**, antes que cualquier import de Nest: el SDK instrumenta parchando librerías al cargarlas, y si Nest se importa antes el parche llega tarde. Por lo mismo lee `process.env` en crudo, que es cuando todavía no hay `ConfigService`.
+  - **Los errores los reporta `AllExceptionsFilter`, no un `SentryGlobalFilter` aparte.** El filtro global ya existía y ya decidía qué es un error; apilar un segundo filtro sería tener dos lugares donde se decide lo mismo. El corte es `>= 500`, el mismo que separa `logger.error` de `logger.warn`: un 400 o un 404 son la API funcionando, y reportarlos llena el tablero hasta que deje de mirarse.
+  - **`sendDefaultPii: false` explícito, más un `beforeSend` que borra `Authorization`, cookies y el body.** Este backend recibe contraseñas en `/auth/login` y datos de clientes de los negocios: que no salgan no puede depender de un default ni de que nadie se olvide.
+  - El `requestId` viaja en el evento: es lo que lo empalma con la línea del log, que con varias réplicas es la única forma de saber cuál fue.
+  - Verificado mutando el corte en las dos direcciones (reportar todo / no reportar nada): caen 2 tests cada vez.
+- **OpenTelemetry** → traces a Tempo/Jaeger. `SENTRY_TRACES_SAMPLE_RATE` ya existe y `SentryModule.forRoot()` está registrado, así que las trazas se prenden con una variable; en 0 por defecto porque se pagan por volumen.
 - **Prometheus** scrape de `/metrics` (con `@willsoto/nestjs-prometheus`).
 - Dashboards en Grafana: latencia por endpoint, tasa de error, queue depth.
+
+Los tres que faltan miran tráfico real: no rinden hasta que haya algo deployado.
 
 ### 9.4 CI — hecha (2026-09-02); falta el CD
 
@@ -1078,7 +1085,7 @@ Target inicial: p95 < 300ms en availability con 50 RPS.
 - ✅ **`audit`**, sin bloquear. `npm audit` reporta hoy 19 vulnerabilidades, casi todas transitivas de `prisma`, y su "arreglo" es **bajar Prisma a la 6**. Un CI rojo por algo que no se puede arreglar deja de mirarse; queda como aviso.
 - ⚠️ **`npm run lint` lleva `--fix` y no sirve para CI**: arregla y sale en verde, escondiendo la deriva. Por eso ahora hay `lint:check` y `typecheck`.
 - ⚠️ **`continue-on-error` en el job pinta el check rojo igual.** El workflow no falla y el PR se puede mergear, pero GitHub muestra ese check como fallido en la lista — un rojo permanente que enseña a ignorar los rojos. Va en el **step**, y el hallazgo al `$GITHUB_STEP_SUMMARY`.
-- ✅ **Dockerfile de producción** (2026-09-03). Multi-stage, usuario `node`, sin Swagger, healthcheck contra `/health`. Construido y corrido de verdad contra el Postgres del compose, no escrito de memoria: aplica las 18 migraciones desde la imagen, arranca con el **rol restringido de RLS**, dos negocios registrados por la API no se ven entre sí, y `docker stop` sale en 0 s con exit 0.
+- ✅ **Dockerfile de producción** (2026-09-03). Multi-stage, usuario `node`, sin Swagger, healthcheck contra `/health`. Construido y corrido de verdad contra el Postgres del compose, no escrito de memoria: aplica las 18 migraciones que había ese día desde la imagen, arranca con el **rol restringido de RLS**, dos negocios registrados por la API no se ven entre sí, y `docker stop` sale en 0 s con exit 0.
   - **Las migraciones no van en el arranque**: la app corre con el rol restringido, que no tiene DDL. Misma imagen, otro comando (`npx prisma migrate deploy`) y otra `DATABASE_URL`.
   - Encontró un bug que solo aparecía en producción: **`npm run start:prod` estaba roto**. `prisma.config.ts` en la raíz corría el `rootDir` inferido de `tsc`, así que el build salía en `dist/src/main.js` y el script ejecutaba `dist/main`. No se notaba porque en dev se usa `nest start --watch`. Arreglado excluyéndolo en `tsconfig.build.json`.
 - Falta el **destino de deploy** y el job de CD, que depende de cuál sea.

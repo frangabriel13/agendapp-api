@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import * as Sentry from '@sentry/nestjs';
 import { ZodError } from 'zod';
 import { isExclusionViolation } from '../../prisma/exclusion-violation';
 import { TenantContextMissingError } from '../errors/tenant-context-missing.error';
@@ -47,6 +48,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
         { err: exception, path: body.path, requestId: body.requestId },
         body.message,
       );
+
+      this.reportToSentry(exception, body);
     } else {
       this.logger.warn(
         {
@@ -59,6 +62,32 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
 
     response.status(body.statusCode).json(body);
+  }
+
+  /**
+   * Manda a Sentry lo que nadie previó, y **solo eso**.
+   *
+   * El corte es el mismo `>= 500` que decide si el log va como `error` o como
+   * `warn`, y por el mismo motivo: un 400 o un 404 son la API funcionando: el
+   * pedido estaba mal. Reportarlos llenaría el tablero de ruido hasta que deje
+   * de mirarse, que es la forma en que estas herramientas se mueren.
+   *
+   * Va acá adentro y no en un `SentryGlobalFilter` aparte porque el filtro
+   * global ya existe y ya está probado: apilar dos filtros para el mismo evento
+   * significa dos lugares donde se decide qué es un error.
+   *
+   * Sin `SENTRY_DSN` no hay cliente inicializado y esto no hace nada, sin
+   * ninguna condición extra — es el caso de desarrollo y el de los tests.
+   */
+  private reportToSentry(exception: unknown, body: ErrorResponseBody): void {
+    Sentry.captureException(exception, {
+      tags: { path: body.path },
+
+      // El `requestId` es lo que empalma el evento de Sentry con la línea del
+      // log: sin él hay que buscar por timestamp, que con varias réplicas no
+      // alcanza para saber cuál de todas fue.
+      extra: { requestId: body.requestId, statusCode: body.statusCode },
+    });
   }
 
   private mapException(

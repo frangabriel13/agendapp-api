@@ -86,6 +86,30 @@ const baseEnvSchema = z.object({
    */
   EMAIL_VERIFICATION_TTL_HOURS: z.coerce.number().int().positive().default(48),
 
+  // --- Observabilidad -----------------------------------------------------
+  /**
+   * Sin DSN, Sentry no se inicializa y todo el SDK queda en no-op.
+   *
+   * Es el default a propósito: en desarrollo y en los tests no hay nada que
+   * reportar a ningún lado, y un error de la suite no tiene por qué viajar a un
+   * servicio externo. Se prende poniendo la variable en producción, sin tocar
+   * una línea de código.
+   *
+   * ⚠️ Esta variable la lee **`src/instrument.ts` directo de `process.env`**, no
+   * el `ConfigService`: Sentry tiene que inicializarse antes que cualquier otro
+   * import para poder instrumentar las librerías, o sea antes de que Nest
+   * exista. Está igual acá para que quede validada y documentada con el resto.
+   */
+  SENTRY_DSN: z.string().url().optional(),
+
+  /**
+   * Qué porcentaje de requests se muestrean para trazas de performance.
+   *
+   * En 0 —el default— se reportan errores y nada más. Las trazas se pagan por
+   * volumen, así que subirlo es una decisión de plata, no técnica.
+   */
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0),
+
   // --- Pagos --------------------------------------------------------------
   /**
    * `sandbox` no cobra nada: cada checkout queda con un pago ya aprobado
